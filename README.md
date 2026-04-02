@@ -89,6 +89,7 @@ asyncio.run(initialize_collection())
 - [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md) — 29 problemas documentados con mitigaciones + roadmap
 - [docs/DIAGRAMS.md](docs/DIAGRAMS.md) — Diagramas de arquitectura, flujos de query/ingestion, experiencia de usuario
 - [docs/AUDIT.md](docs/AUDIT.md) — Auditoria de componentes vs docs oficiales, gaps, y mejoras priorizadas
+- [docs/ROADMAP_V2.md](docs/ROADMAP_V2.md) — 33 features adicionales categorizados y priorizados por sprint
 
 ## Licencia
 
