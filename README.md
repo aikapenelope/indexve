@@ -50,7 +50,7 @@ docker-compose.yml                    # Configuracion hardened (memory limits, s
 | Auth | Clerk | Multi-tenancy nativa |
 | Orquestacion | Prefect OSS v3 | Ingestion, re-indexacion, backups, health checks |
 | Observabilidad | Arize Phoenix OSS | Tracing + evaluaciones RAG |
-| Frontend | CopilotKit + Next.js | Chat UI con streaming |
+| Frontend | Next.js + assistant-ui | Chat UI con streaming (PWA-ready) |
 | Guardrails | NeMo Guardrails (NVIDIA) | Prompt injection, PII, tenant isolation |
 | Email | Resend | Notificaciones a tecnicos |
 
@@ -87,6 +87,7 @@ asyncio.run(initialize_collection())
 - [ARCHITECTURE.md](ARCHITECTURE.md) — Stack tecnico, decisiones, distribucion de RAM, costos
 - [docs/PRD.md](docs/PRD.md) — Requisitos del producto, usuarios, funcionalidades
 - [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md) — 29 problemas documentados con mitigaciones + roadmap
+- [docs/DIAGRAMS.md](docs/DIAGRAMS.md) — Diagramas de arquitectura, flujos de query/ingestion, experiencia de usuario
 
 ## Licencia
 
