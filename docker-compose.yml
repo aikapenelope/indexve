@@ -191,8 +191,11 @@ services:
       - VOYAGE_API_KEY_FILE=/run/secrets/voyage_key
       - QDRANT_URL=http://qdrant:6333
       - REDIS_URL=redis://redis:6379
+      - OLLAMA_URL=http://ollama:11434
     depends_on:
       prefect-server:
+        condition: service_healthy
+      ollama:
         condition: service_healthy
     restart: unless-stopped
     deploy:

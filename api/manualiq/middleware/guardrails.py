@@ -63,8 +63,9 @@ class GuardrailsEngine:
     async def check_input(self, user_message: str) -> InputCheckResult:
         """Run input rails on a user message.
 
-        Returns whether the message is allowed and an optional
-        rejection response if blocked.
+        Uses check_async (NeMo v0.21 IORails) for standalone input
+        validation without a full conversation flow. Falls back to
+        generate_async for older versions.
         """
         if not self._enabled or self._rails is None:
             return InputCheckResult(allowed=True)
@@ -73,6 +74,25 @@ class GuardrailsEngine:
             from nemoguardrails import LLMRails  # type: ignore[import-untyped]
 
             rails: LLMRails = self._rails  # type: ignore[assignment]
+
+            # Try check_async first (v0.21+ IORails, parallel execution).
+            check_fn = getattr(rails, "check_async", None)
+            if check_fn is not None:
+                result = await check_fn(
+                    input=user_message,
+                    check_type="input",
+                )
+                if isinstance(result, dict) and not result.get("allowed", True):
+                    logger.info("Input rail blocked: %s", user_message[:50])
+                    return InputCheckResult(
+                        allowed=False,
+                        rejection_message=str(
+                            result.get("message", "Solicitud no permitida.")
+                        ),
+                    )
+                return InputCheckResult(allowed=True)
+
+            # Fallback to generate_async for older NeMo versions.
             response = await rails.generate_async(
                 messages=[{"role": "user", "content": user_message}]
             )
@@ -83,8 +103,6 @@ class GuardrailsEngine:
                 else str(response)
             )  # type: ignore[union-attr]
 
-            # If the rails blocked the input, the response will be a
-            # refusal message (defined in our Colang rules).
             blocked_phrases = [
                 "no puedo procesar",
                 "informacion personal",
@@ -104,7 +122,6 @@ class GuardrailsEngine:
             return InputCheckResult(allowed=True)
 
         except Exception as exc:
-            # Guardrail failure should not block the pipeline.
             logger.warning("Input rail error (allowing through): %s", exc)
             return InputCheckResult(allowed=True)
 

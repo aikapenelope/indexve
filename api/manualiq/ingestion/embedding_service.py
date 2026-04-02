@@ -113,8 +113,17 @@ class EmbeddingService:
         self,
         texts: list[str],
         model: str,
+        input_type: str = "document",
     ) -> list[list[float]]:
-        """Call Voyage API with retry for a batch of texts."""
+        """Call Voyage API with retry for a batch of texts.
+
+        Args:
+            texts: Texts to embed.
+            model: Voyage model name.
+            input_type: "document" for indexing, "query" for search.
+                Voyage prepends different instructions internally based
+                on this parameter, improving retrieval quality.
+        """
 
         async def _do_call() -> object:
             response = await self._http.post(
@@ -123,6 +132,8 @@ class EmbeddingService:
                 json={
                     "input": texts,
                     "model": model,
+                    "input_type": input_type,
+                    "truncation": True,
                 },
             )
             response.raise_for_status()
@@ -136,13 +147,14 @@ class EmbeddingService:
         self,
         texts: list[str],
         model: str,
+        input_type: str = "document",
     ) -> tuple[list[list[float]], str]:
         """Embed texts with Voyage API, falling back to Ollama on failure.
 
         Returns (vectors, model_used) tuple.
         """
         try:
-            vectors = await self._call_voyage_api(texts, model)
+            vectors = await self._call_voyage_api(texts, model, input_type)
             return vectors, model
         except Exception as voyage_exc:
             logger.warning(
@@ -177,8 +189,10 @@ class EmbeddingService:
                     text=text, vector=cached_vector, model=model, cached=True
                 )
 
-        # Cache miss: call API with fallback.
-        vectors, model_used = await self._embed_with_fallback([text], model)
+        # Cache miss: call API with fallback (input_type="query" for search).
+        vectors, model_used = await self._embed_with_fallback(
+            [text], model, input_type="query"
+        )
         vector = vectors[0]
 
         # Cache the result.
