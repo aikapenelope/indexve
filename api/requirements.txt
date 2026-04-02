@@ -1,0 +1,53 @@
+# ManualIQ API dependencies
+# Fase 1-5 del roadmap de mitigaciones
+
+# Web framework
+fastapi>=0.115.0,<1.0
+uvicorn[standard]>=0.32.0,<1.0
+
+# PDF parsing
+docling>=2.31.0,<3.0
+llama-parse>=0.6.0,<1.0
+
+# RAG framework
+llama-index-core>=0.12.0,<1.0
+llama-index-vector-stores-qdrant>=0.4.0,<1.0
+llama-index-embeddings-voyageai>=0.3.0,<1.0
+
+# Vector DB client
+qdrant-client>=1.13.0,<2.0
+
+# Reranker
+cohere>=5.0,<6.0
+
+# LLM providers
+anthropic>=0.42.0,<1.0
+google-genai>=1.0,<2.0
+
+# Cache and rate limiting
+redis>=5.0,<6.0
+
+# Orchestration
+prefect>=3.0,<4.0
+
+# Guardrails
+nemoguardrails>=0.11.0,<1.0
+
+# Observability
+arize-phoenix>=8.0,<9.0
+openinference-instrumentation-llama-index>=3.0,<4.0
+
+# Auth
+clerk-backend-api>=1.0,<2.0
+
+# Email
+resend>=2.0,<3.0
+
+# Utilities
+pydantic>=2.0,<3.0
+httpx>=0.28.0,<1.0
+tenacity>=9.0,<10.0
+
+# Dev tools
+pyright>=1.1.390
+ruff>=0.8.0
