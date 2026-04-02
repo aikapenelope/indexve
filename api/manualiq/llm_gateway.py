@@ -34,6 +34,19 @@ class LLMModel(Enum):
     GEMINI = "gemini"
 
 
+# Cost per 1M tokens (USD) as of April 2026.
+_COST_PER_1M: dict[str, tuple[float, float]] = {
+    "claude": (3.0, 15.0),  # $3 input, $15 output
+    "gemini": (0.15, 0.60),  # $0.15 input, $0.60 output
+}
+
+
+def _estimate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
+    """Estimate cost in USD for a single LLM call."""
+    rates = _COST_PER_1M.get(model, (0.0, 0.0))
+    return (input_tokens * rates[0] + output_tokens * rates[1]) / 1_000_000
+
+
 @dataclass
 class LLMResponse:
     """Response from the LLM gateway."""
@@ -42,6 +55,7 @@ class LLMResponse:
     model: LLMModel
     input_tokens: int
     output_tokens: int
+    estimated_cost_usd: float = 0.0
     was_fallback: bool = False
 
 
@@ -93,11 +107,14 @@ class LLMGateway:
 
         response = await self._anthropic.messages.create(**kwargs)  # type: ignore[arg-type]
         text = response.content[0].text  # type: ignore[union-attr]
+        in_tok = response.usage.input_tokens
+        out_tok = response.usage.output_tokens
         return LLMResponse(
             text=text,
             model=LLMModel.CLAUDE,
-            input_tokens=response.usage.input_tokens,
-            output_tokens=response.usage.output_tokens,
+            input_tokens=in_tok,
+            output_tokens=out_tok,
+            estimated_cost_usd=_estimate_cost("claude", in_tok, out_tok),
         )
 
     @retry(**_RETRY_KWARGS)
@@ -126,6 +143,7 @@ class LLMGateway:
             model=LLMModel.GEMINI,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
+            estimated_cost_usd=_estimate_cost("gemini", input_tokens, output_tokens),
         )
 
     async def generate(

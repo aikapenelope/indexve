@@ -43,7 +43,7 @@ def _file_sha256(path: Path) -> str:
 # ---------------------------------------------------------------------------
 
 
-@task(name="scan-documents-for-changes")
+@task(name="scan-documents-for-changes", retries=2, retry_delay_seconds=30)
 def scan_for_changes(
     corpus_dir: str,
     hash_store: dict[str, str],
@@ -87,7 +87,12 @@ def scan_for_changes(
     return changed
 
 
-@task(name="reindex-single-document")
+@task(
+    name="reindex-single-document",
+    retries=2,
+    retry_delay_seconds=60,
+    persist_result=True,
+)
 def reindex_document(
     doc_info: dict[str, str],
     tenant_id: str,
@@ -148,7 +153,7 @@ def reindex_document(
     }
 
 
-@flow(name="reindex-documents", log_prints=True)
+@flow(name="reindex-documents", log_prints=True, retries=1, retry_delay_seconds=300)
 def reindex_documents(
     corpus_dir: str,
     tenant_id: str,
@@ -201,7 +206,7 @@ def reindex_documents(
 # ---------------------------------------------------------------------------
 
 
-@task(name="create-qdrant-snapshot")
+@task(name="create-qdrant-snapshot", retries=3, retry_delay_seconds=60)
 def create_qdrant_snapshot(
     qdrant_url: str,
     collection_name: str,
@@ -236,7 +241,7 @@ def create_qdrant_snapshot(
     return {"snapshot": snapshot_name, "collection": collection_name}
 
 
-@task(name="upload-snapshot-to-storage")
+@task(name="upload-snapshot-to-storage", retries=2, retry_delay_seconds=30)
 def upload_snapshot_to_storage(
     qdrant_url: str,
     collection_name: str,
@@ -277,7 +282,7 @@ def upload_snapshot_to_storage(
     return str(output_path)
 
 
-@flow(name="backup-qdrant", log_prints=True)
+@flow(name="backup-qdrant", log_prints=True, retries=2, retry_delay_seconds=120)
 def backup_qdrant(
     qdrant_url: str = "http://qdrant:6333",
     collection_name: str = "manualiq",

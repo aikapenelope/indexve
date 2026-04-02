@@ -235,6 +235,19 @@ class QueryRequest(BaseModel):
     query: str = Field(..., min_length=1, max_length=2000)
 
 
+class SourceChunk(BaseModel):
+    """A source chunk returned with the query response for the PDF viewer."""
+
+    doc_id: str
+    section_path: str
+    page_ref: str
+    score: float
+    safety_level: str
+    doc_language: str
+    equipment: str
+    text_preview: str = ""
+
+
 class QueryResponse(BaseModel):
     """Response body for POST /query."""
 
@@ -243,6 +256,7 @@ class QueryResponse(BaseModel):
     score: float
     chunks_used: int
     chunks_retrieved: int
+    sources: list[SourceChunk] = []
     was_fallback: bool = False
     was_cached: bool = False
     intent: str = "specific"
@@ -481,12 +495,28 @@ async def query_endpoint(
     if alert:
         logger.warning("Cost alert: %s", alert.message)
 
+    # Build sources for the PDF viewer.
+    sources = [
+        SourceChunk(
+            doc_id=c.doc_id,
+            section_path=c.section_path,
+            page_ref=c.page_ref,
+            score=c.score,
+            safety_level=c.safety_level,
+            doc_language=c.doc_language,
+            equipment=c.equipment,
+            text_preview=c.text[:200],
+        )
+        for c in top_chunks
+    ]
+
     return QueryResponse(
         answer=answer,
         confidence=confidence.value,
         score=best_score,
         chunks_used=len(top_chunks),
         chunks_retrieved=len(retrieved_chunks),
+        sources=sources,
         was_fallback=llm_response.was_fallback,
         intent=intent_result.intent.value,
     )
