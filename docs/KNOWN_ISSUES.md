@@ -397,3 +397,78 @@ incorrecto y dana un equipo, toda la planta dejara de usar ManualIQ.
 
 **Aplicacion**: Priorizar precision sobre recall. Es mejor no responder que responder mal.
 El disclaimer de verificacion con supervisor no es decorativo, es un requisito legal.
+
+---
+
+## 7. ROADMAP DE MITIGACIONES
+
+> Clasificacion de todos los problemas documentados y orden de implementacion.
+> Cada problema se clasifica en una de tres categorias segun como se resuelve.
+
+### Categoria A: Se resuelve con NUESTRO codigo (Python/TS)
+
+| #   | Problema                      | Que escribimos                                                                 | Complejidad |
+|-----|-------------------------------|--------------------------------------------------------------------------------|-------------|
+| 1.1 | Cascada de alucinaciones     | Confidence threshold en query engine: si score <0.75, responder "no encontre"  | Baja        |
+| 1.2 | Evidencia dispersa           | Configurar LlamaIndex Sub-Question Engine + resolver related_chunks            | Media       |
+| 1.3 | Fragmentacion de contexto    | Chunker custom con reglas semanticas (no dividir pasos, tablas, part numbers)  | Alta        |
+| 1.4 | Sobre-recuperacion           | Pipeline: retrieve top-20 → rerank → top-5 al LLM + deduplicacion por hash    | Baja        |
+| 1.5 | Staleness                    | Prefect flow de re-indexacion con deteccion de cambios por SHA256              | Media       |
+| 1.6 | Queries ambiguas             | Clasificador de intencion con Gemini Flash antes del retrieval                 | Media       |
+| 2.1 | Docling hanging              | Wrapper con subprocess timeout + fallback a LlamaParse                         | Media       |
+| 2.5 | Voyage rate limits           | Retry con exponential backoff + cache de embeddings en Redis                   | Baja        |
+| 2.6 | NeMo latencia                | Ejecutar guardrails de input en paralelo con retrieval (asyncio)               | Baja        |
+| 3.1 | LLM responde en ingles       | Guardrail de output: deteccion de idioma + retry con prompt reforzado          | Baja        |
+| 3.2 | Cross-lingual retrieval      | Query expansion: generar version EN de la query ES con Gemini Flash            | Media       |
+| 3.3 | Terminologia tecnica         | Glosario tecnico configurable por tenant, inyectado en el prompt               | Baja        |
+| 4.1 | Prompt injection             | NeMo Guardrails config (Colang rules) + tenant_id server-side                  | Media       |
+| 4.2 | Data leakage tenants         | Doble verificacion post-retrieval: validar tenant_id de cada chunk             | Baja        |
+| 4.3 | PII en output                | NeMo Guardrails output rail para PII detection                                 | Baja        |
+| 5.1 | Costos fuera de control      | Rate limiting middleware en FastAPI con Redis counters                          | Media       |
+| 5.2 | Perdida de vectores          | Prefect flow: Qdrant snapshot diario + upload a storage externo                | Baja        |
+| 5.3 | Health checks                | Prefect flow: ping a cada servicio + alerta via Resend                         | Baja        |
+
+### Categoria B: Se resuelve con CONFIGURACION (Docker, Qdrant config, env vars)
+
+| #   | Problema                      | Que configuramos                                                               | Complejidad |
+|-----|-------------------------------|--------------------------------------------------------------------------------|-------------|
+| 2.2 | Docling crash memoria        | Dockerfile: pre-descargar modelos + memory limit 2GB en worker                 | Baja        |
+| 2.3 | Qdrant crash memoria         | Docker: memory limit 3GB + QDRANT__SERVICE__MAX_WORKERS=4 + int8 quantization  | Baja        |
+| 2.4 | Qdrant filtros lentos        | Crear payload indexes al inicializar coleccion (tenant_id, equipment, safety_level) | Baja   |
+| 2.7 | CopilotKit inestable         | Pinear version en package.json + wrapper de abstraccion                        | Baja        |
+| 2.8 | Prefect v2 vs v3             | Usar solo v3 desde el inicio, ignorar tutoriales v2                            | Baja        |
+| 4.4 | Supply chain attacks         | requirements.txt con hashes + pip-audit + Docker tags fijos                    | Baja        |
+| 5.3 | Single point of failure      | Docker restart policies unless-stopped en todos los servicios                  | Baja        |
+
+### Categoria C: NO se puede resolver (riesgo aceptado o depende de terceros)
+
+| #   | Problema                      | Por que no se puede resolver                    | Mitigacion                                      |
+|-----|-------------------------------|-------------------------------------------------|-------------------------------------------------|
+| —   | Voyage downtime              | Depende de la infraestructura de Voyage AI      | Fallback a Qwen3 local (degradacion graceful)   |
+| —   | Qdrant bugs futuros          | Depende del equipo de Qdrant                    | Pinear version estable, snapshots diarios       |
+| —   | Claude alucinaciones         | Inherente a LLMs                                | Guardrails + threshold + disclaimer             |
+| —   | VPS unico                    | Limitacion de presupuesto MVP                   | Escalar a 2 VPS cuando el negocio lo justifique |
+
+### Resumen
+
+**NINGUN problema requiere modificar codigo OSS de terceros.** Todo se resuelve en 2 niveles:
+
+- **18 problemas** → nuestro codigo Python/TS (wrappers, middleware, flows, configs)
+- **7 problemas** → configuracion de Docker/infra (Dockerfiles, env vars, docker-compose)
+- **4 problemas** → riesgo aceptado con mitigacion parcial
+
+No necesitamos forkear ni parchear Docling, Qdrant, LlamaIndex, ni ningun otro proyecto OSS.
+Todas las mitigaciones son wrappers, configuraciones, y logica de aplicacion que escribimos nosotros.
+
+### Orden de implementacion (por impacto)
+
+| Fase | Problemas cubiertos | Que se implementa                                                    | Prioridad |
+|------|---------------------|----------------------------------------------------------------------|-----------|
+| 1    | 1.3                 | **Chunker custom semantico** — base de todo, si el chunking es malo nada funciona | Critica   |
+| 2    | 2.1, 2.2            | **Pipeline de ingestion con Docling wrapper** — timeout + fallback + pre-descarga modelos | Alta |
+| 3    | 1.1, 1.4            | **Query engine con confidence threshold** — retrieve → rerank → threshold → generate | Alta |
+| 4    | 4.1, 4.2, 5.1       | **Rate limiting + tenant isolation** — seguridad basica del MVP      | Alta      |
+| 5    | 1.5, 5.2, 5.3       | **Prefect v3 flows** — re-indexacion, backups, health checks         | Media     |
+| 6    | 1.2, 1.6, 3.1-3.3   | **Query intelligence** — sub-questions, intent classification, multilingual | Media |
+| 7    | 2.5, 2.6, 4.3       | **Resilience** — retry/cache embeddings, guardrails async, PII rail  | Baja      |
+| 8    | Cat B completa       | **Configuracion Docker/infra** — se aplica en paralelo con cada fase | Continua  |
