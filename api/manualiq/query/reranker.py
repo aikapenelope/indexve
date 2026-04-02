@@ -122,14 +122,23 @@ class Reranker:
         chunks: list[RetrievedChunk],
         top_n: int,
     ) -> RerankResult:
-        """Rerank using Cohere Rerank v3.5 API."""
-        documents = [c.text for c in chunks]
+        """Rerank using Cohere Rerank v3.5 API.
+
+        Includes metadata context (section, equipment) in the document
+        text to give Cohere more signal for ranking.
+        """
+        # Enrich documents with metadata context for better ranking.
+        documents = [
+            f"[{c.section_path}] [{c.equipment}] {c.text}" if c.section_path else c.text
+            for c in chunks
+        ]
 
         response = await self._client.rerank(
             model=self._model,
             query=query,
             documents=documents,
             top_n=min(top_n, len(chunks)),
+            max_tokens_per_doc=4096,
         )
 
         reranked: list[RetrievedChunk] = []

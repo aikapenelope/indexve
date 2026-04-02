@@ -24,6 +24,7 @@ import httpx
 from qdrant_client import AsyncQdrantClient, models
 
 from manualiq.ingestion.chunker import Chunk
+from manualiq.ingestion.sparse_vectors import SparseVectorizer
 from manualiq.middleware.resilience import (
     EmbeddingCache,
     RetryConfig,
@@ -80,6 +81,7 @@ class EmbeddingService:
         self._retry_config = retry_config or RetryConfig()
         self._ollama_url = ollama_url
         self._http = httpx.AsyncClient(timeout=60.0)
+        self._sparse = SparseVectorizer()
 
     async def close(self) -> None:
         """Clean up HTTP client."""
@@ -113,8 +115,17 @@ class EmbeddingService:
         self,
         texts: list[str],
         model: str,
+        input_type: str = "document",
     ) -> list[list[float]]:
-        """Call Voyage API with retry for a batch of texts."""
+        """Call Voyage API with retry for a batch of texts.
+
+        Args:
+            texts: Texts to embed.
+            model: Voyage model name.
+            input_type: "document" for indexing, "query" for search.
+                Voyage prepends different instructions internally based
+                on this parameter, improving retrieval quality.
+        """
 
         async def _do_call() -> object:
             response = await self._http.post(
@@ -123,6 +134,8 @@ class EmbeddingService:
                 json={
                     "input": texts,
                     "model": model,
+                    "input_type": input_type,
+                    "truncation": True,
                 },
             )
             response.raise_for_status()
@@ -136,13 +149,14 @@ class EmbeddingService:
         self,
         texts: list[str],
         model: str,
+        input_type: str = "document",
     ) -> tuple[list[list[float]], str]:
         """Embed texts with Voyage API, falling back to Ollama on failure.
 
         Returns (vectors, model_used) tuple.
         """
         try:
-            vectors = await self._call_voyage_api(texts, model)
+            vectors = await self._call_voyage_api(texts, model, input_type)
             return vectors, model
         except Exception as voyage_exc:
             logger.warning(
@@ -177,8 +191,10 @@ class EmbeddingService:
                     text=text, vector=cached_vector, model=model, cached=True
                 )
 
-        # Cache miss: call API with fallback.
-        vectors, model_used = await self._embed_with_fallback([text], model)
+        # Cache miss: call API with fallback (input_type="query" for search).
+        vectors, model_used = await self._embed_with_fallback(
+            [text], model, input_type="query"
+        )
         vector = vectors[0]
 
         # Cache the result.
@@ -250,9 +266,10 @@ class EmbeddingService:
         embeddings: list[EmbeddingResult],
         collection_name: str = "manualiq",
     ) -> int:
-        """Upsert embedded chunks to Qdrant with full metadata.
+        """Upsert embedded chunks to Qdrant with hybrid vectors.
 
-        Uses the shard_key=tenant_id for native tenant isolation.
+        Each point gets both dense (Voyage) and sparse (BM25) vectors
+        for hybrid search. Uses shard_key=tenant_id for tenant isolation.
 
         Args:
             chunks: The chunks with metadata.
@@ -262,9 +279,12 @@ class EmbeddingService:
         Returns:
             Number of points upserted.
         """
+        # Generate sparse vectors for all chunks.
+        sparse_vectors = self._sparse.vectorize_batch([c.text for c in chunks])
+
         points: list[models.PointStruct] = []
 
-        for chunk, emb in zip(chunks, embeddings):
+        for chunk, emb, sparse in zip(chunks, embeddings, sparse_vectors):
             meta = chunk.metadata
             point_id = str(uuid.uuid5(uuid.NAMESPACE_URL, meta.hash_sha256))
 
@@ -287,10 +307,17 @@ class EmbeddingService:
                 "text": chunk.text,
             }
 
+            # Named vectors: "dense" (Voyage) + "sparse" (BM25).
             points.append(
                 models.PointStruct(
                     id=point_id,
-                    vector=emb.vector,
+                    vector={
+                        "dense": emb.vector,
+                        "sparse": models.SparseVector(
+                            indices=sparse.indices,
+                            values=sparse.values,
+                        ),
+                    },
                     payload=payload,
                 )
             )

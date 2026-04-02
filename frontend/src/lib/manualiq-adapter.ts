@@ -1,6 +1,6 @@
 "use client";
 
-import type { ChatModelAdapter } from "@assistant-ui/react";
+import type { ChatModelAdapter, ChatModelRunResult } from "@assistant-ui/react";
 
 /**
  * API base URL for the ManualIQ FastAPI backend.
@@ -10,29 +10,31 @@ import type { ChatModelAdapter } from "@assistant-ui/react";
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 /**
- * Response shape from POST /query on the FastAPI backend.
+ * SSE event from the /query/stream endpoint.
  */
-interface QueryResponse {
-  answer: string;
-  confidence: string;
-  score: number;
-  chunks_used: number;
-  chunks_retrieved: number;
-  was_fallback: boolean;
-  intent: string;
+interface StreamEvent {
+  type: "text" | "sources" | "error";
+  content?: string;
+  sources?: Array<{
+    doc_id: string;
+    section_path: string;
+    page_ref: string;
+    score: number;
+    safety_level: string;
+  }>;
 }
 
 /**
  * ChatModelAdapter that connects assistant-ui to the ManualIQ FastAPI backend.
  *
- * Uses LocalRuntime pattern: assistant-ui manages state, we provide the
- * model adapter that calls our API and returns the response.
+ * Uses the streaming endpoint (/query/stream) for token-by-token response.
+ * First token arrives in ~500ms, full response streams over 2-4 seconds.
  *
  * The tenant_id and user_id are injected via headers (server-side in
  * production via Clerk middleware; dev mode uses hardcoded values).
  */
 export const manualiqAdapter: ChatModelAdapter = {
-  async run({ messages, abortSignal }) {
+  async *run({ messages, abortSignal }): AsyncGenerator<ChatModelRunResult> {
     // Extract the last user message as the query.
     const lastMessage = messages[messages.length - 1];
     const query =
@@ -44,7 +46,7 @@ export const manualiqAdapter: ChatModelAdapter = {
         : "";
 
     if (!query.trim()) {
-      return {
+      yield {
         content: [
           {
             type: "text" as const,
@@ -52,9 +54,10 @@ export const manualiqAdapter: ChatModelAdapter = {
           },
         ],
       };
+      return;
     }
 
-    const response = await fetch(`${API_URL}/query`, {
+    const response = await fetch(`${API_URL}/query/stream`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -68,7 +71,7 @@ export const manualiqAdapter: ChatModelAdapter = {
 
     if (!response.ok) {
       const errorText = await response.text();
-      return {
+      yield {
         content: [
           {
             type: "text" as const,
@@ -76,20 +79,64 @@ export const manualiqAdapter: ChatModelAdapter = {
           },
         ],
       };
+      return;
     }
 
-    const data: QueryResponse = await response.json();
-
-    // Build the response with metadata for the UI.
-    let text = data.answer;
-
-    // Append confidence badge if not high.
-    if (data.confidence !== "high" && data.confidence !== "none") {
-      text = `> Confianza: ${data.confidence} (score: ${data.score.toFixed(2)})\n\n${text}`;
+    // Read the SSE stream.
+    const reader = response.body?.getReader();
+    if (!reader) {
+      yield {
+        content: [{ type: "text" as const, text: "Error: No stream available" }],
+      };
+      return;
     }
 
-    return {
-      content: [{ type: "text" as const, text }],
-    };
+    const decoder = new TextDecoder();
+    let accumulated = "";
+    let buffer = "";
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+
+        // Process complete SSE lines.
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          const data = line.slice(6).trim();
+
+          if (data === "[DONE]") break;
+
+          try {
+            const event: StreamEvent = JSON.parse(data);
+
+            if (event.type === "text" && event.content) {
+              accumulated += event.content;
+              yield {
+                content: [{ type: "text" as const, text: accumulated }],
+              };
+            }
+            // Sources events are received but not rendered as text.
+            // The frontend can use them for the PDF viewer sidebar.
+          } catch {
+            // Skip malformed JSON lines.
+          }
+        }
+      }
+    } finally {
+      reader.releaseLock();
+    }
+
+    // Final yield with complete text.
+    if (accumulated) {
+      yield {
+        content: [{ type: "text" as const, text: accumulated }],
+      };
+    }
   },
 };
