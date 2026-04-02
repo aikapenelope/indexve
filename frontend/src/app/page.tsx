@@ -1,17 +1,21 @@
 "use client";
 
+import { useState } from "react";
 import { AssistantRuntimeProvider, useLocalRuntime } from "@assistant-ui/react";
 import { Thread } from "@/components/assistant-ui/thread";
-import { manualiqAdapter } from "@/lib/manualiq-adapter";
+import { SourceViewer } from "@/components/source-viewer";
+import { manualiqAdapter, lastSources } from "@/lib/manualiq-adapter";
 
 /**
  * ManualIQ main page.
  *
  * Uses assistant-ui LocalRuntime with our custom ChatModelAdapter
- * that calls the FastAPI backend at /query.
+ * that calls the FastAPI backend at /query/stream.
+ * Includes a source viewer sidebar for PDF citations.
  */
 export default function Home() {
   const runtime = useLocalRuntime(manualiqAdapter);
+  const [sourcesVisible, setSourcesVisible] = useState(false);
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
@@ -63,6 +67,13 @@ export default function Home() {
         <main style={{ flex: 1, overflow: "hidden" }}>
           <Thread />
         </main>
+
+        {/* Source viewer sidebar */}
+        <SourceViewer
+          sources={lastSources}
+          isVisible={sourcesVisible}
+          onToggle={() => setSourcesVisible(!sourcesVisible)}
+        />
 
         {/* Footer disclaimer */}
         <footer

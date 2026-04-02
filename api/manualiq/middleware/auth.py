@@ -33,8 +33,21 @@ class AuthContext:
     tenant_id: str
     user_id: str
     email: str = ""
-    role: str = "tecnico"
+    role: str = "tecnico"  # tecnico, supervisor, admin
     plan: TenantPlan = TenantPlan.FREE
+
+    def require_role(self, *allowed_roles: str) -> None:
+        """Raise 403 if the user's role is not in the allowed list.
+
+        Usage in endpoints:
+            auth.require_role("admin")
+            auth.require_role("admin", "supervisor")
+        """
+        if self.role not in allowed_roles:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Requires role: {', '.join(allowed_roles)}. Current: {self.role}",
+            )
 
 
 def _is_dev_mode() -> bool:

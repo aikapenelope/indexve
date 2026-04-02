@@ -920,6 +920,73 @@ async def history_endpoint(
     return HistoryResponse(messages=messages, total=len(messages))
 
 
+# ---------------------------------------------------------------------------
+# Admin metrics (PRD 4.1, requires admin role)
+# ---------------------------------------------------------------------------
+
+
+class MetricsResponse(BaseModel):
+    """Response body for GET /admin/metrics."""
+
+    tenant_id: str
+    daily_queries: int
+    daily_limit: int
+    documents_indexed: int
+    feedback_positive: int
+    feedback_negative: int
+
+
+@app.get("/admin/metrics", response_model=MetricsResponse)
+async def admin_metrics_endpoint(
+    auth: AuthContext = Depends(get_auth),
+) -> MetricsResponse:
+    """Get usage metrics for the authenticated tenant.
+
+    Requires admin or supervisor role.
+    """
+    auth.require_role("admin", "supervisor")
+
+    # Query usage from rate limiter.
+    usage = await state.rate_limiter.get_usage(auth.tenant_id)
+
+    # Count indexed documents from Redis.
+    doc_count = 0
+    cursor: int = 0
+    while True:
+        cursor, keys = await state.redis.scan(  # type: ignore[misc]
+            cursor=cursor, match=f"doc:{auth.tenant_id}:*", count=100
+        )
+        doc_count += len(keys)
+        if cursor == 0:
+            break
+
+    # Count feedback from Redis.
+    positive = 0
+    negative = 0
+    cursor = 0
+    while True:
+        cursor, keys = await state.redis.scan(  # type: ignore[misc]
+            cursor=cursor, match=f"feedback:{auth.tenant_id}:*", count=100
+        )
+        for key in keys:
+            rating = await state.redis.hget(key, "rating")  # type: ignore[misc]
+            if rating == "1":
+                positive += 1
+            elif rating == "-1":
+                negative += 1
+        if cursor == 0:
+            break
+
+    return MetricsResponse(
+        tenant_id=auth.tenant_id,
+        daily_queries=usage["daily_count"],
+        daily_limit=auth.plan.value,
+        documents_indexed=doc_count,
+        feedback_positive=positive,
+        feedback_negative=negative,
+    )
+
+
 @app.get("/health", response_model=HealthResponse)
 async def health_endpoint() -> HealthResponse:
     """Health check for all services."""
