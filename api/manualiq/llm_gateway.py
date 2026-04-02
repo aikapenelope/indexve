@@ -191,6 +191,42 @@ class LLMGateway:
                 )
                 raise
 
+    async def stream_generate(
+        self,
+        prompt: str,
+        *,
+        max_tokens: int = 4096,
+    ):
+        """Stream Claude response token-by-token.
+
+        Yields text deltas as they arrive. Used by /query/stream
+        for perceived latency <5s (first token appears in ~500ms).
+
+        Falls back to non-streaming Gemini if Claude streaming fails.
+
+        Yields:
+            str: Text delta chunks.
+        """
+        kwargs: dict[str, object] = {
+            "model": self._claude_model,
+            "max_tokens": max_tokens,
+            "messages": [{"role": "user", "content": prompt}],
+        }
+        if self._system_prompt:
+            kwargs["system"] = self._system_prompt
+
+        try:
+            async with self._anthropic.messages.stream(**kwargs) as stream:  # type: ignore[arg-type]
+                async for text in stream.text_stream:
+                    yield text
+        except Exception as exc:
+            logger.warning(
+                "Claude streaming failed, falling back to Gemini: %s", str(exc)[:100]
+            )
+            # Fallback: non-streaming Gemini, yield full response at once.
+            response = await self._call_gemini(prompt)
+            yield response.text
+
     async def route(
         self,
         prompt: str,
