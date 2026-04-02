@@ -16,7 +16,6 @@ from __future__ import annotations
 import logging
 import os
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -29,9 +28,9 @@ from qdrant_client import AsyncQdrantClient, models
 
 from manualiq.ingestion.embedding_service import EmbeddingService
 from manualiq.llm_gateway import LLMGateway
+from manualiq.middleware.auth import AuthContext, authenticate_request
 from manualiq.middleware.rate_limiter import (
     RateLimiter,
-    TenantPlan,
     check_cost_alert,
 )
 from manualiq.middleware.resilience import EmbeddingCache, sanitize_pii
@@ -88,6 +87,32 @@ state = AppState()
 @asynccontextmanager
 async def lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
     """Initialize and tear down shared resources."""
+    # Phoenix tracing (ARCHITECTURE.md Section 3.13).
+    # Automatically captures every LlamaIndex query, retrieval, reranking,
+    # and LLM call with times, tokens, and costs.
+    phoenix_endpoint = os.environ.get("PHOENIX_COLLECTOR_ENDPOINT", "")
+    if phoenix_endpoint:
+        try:
+            from openinference.instrumentation.llama_index import (  # type: ignore[import-untyped]
+                LlamaIndexInstrumentor,
+            )
+            from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (  # type: ignore[import-untyped]
+                OTLPSpanExporter,
+            )
+            from opentelemetry.sdk.trace import TracerProvider  # type: ignore[import-untyped]
+            from opentelemetry.sdk.trace.export import SimpleSpanProcessor  # type: ignore[import-untyped]
+
+            provider = TracerProvider()
+            provider.add_span_processor(
+                SimpleSpanProcessor(OTLPSpanExporter(endpoint=phoenix_endpoint))
+            )
+            LlamaIndexInstrumentor().instrument(tracer_provider=provider)
+            logger.info("Phoenix tracing enabled: %s", phoenix_endpoint)
+        except ImportError:
+            logger.warning(
+                "Phoenix tracing packages not installed, skipping instrumentation"
+            )
+
     # Redis.
     redis_url = os.environ.get("REDIS_URL", "redis://localhost:6379")
     state.redis = aioredis.from_url(redis_url, decode_responses=True)  # type: ignore[assignment]
@@ -153,46 +178,14 @@ app.add_middleware(
 
 # ---------------------------------------------------------------------------
 # Auth dependency (Clerk JWT -> tenant_id + user_id)
+# Uses manualiq.middleware.auth which supports both production (Clerk JWT)
+# and development (header-based) authentication.
 # ---------------------------------------------------------------------------
 
 
-@dataclass
-class AuthContext:
-    """Authenticated request context from Clerk JWT."""
-
-    tenant_id: str
-    user_id: str
-    plan: TenantPlan = TenantPlan.FREE
-
-
 async def get_auth(request: Request) -> AuthContext:
-    """Extract tenant_id and user_id from Clerk JWT.
-
-    In production, this verifies the JWT signature with Clerk's JWKS.
-    For development, it reads from headers.
-
-    The tenant_id is ALWAYS server-side — never from the request body.
-    This prevents prompt injection attacks (issue 4.1).
-    """
-    # Development mode: read from headers.
-    # Production: replace with Clerk JWT verification.
-    tenant_id = request.headers.get("x-tenant-id", "")
-    user_id = request.headers.get("x-user-id", "")
-
-    if not tenant_id or not user_id:
-        raise HTTPException(
-            status_code=401,
-            detail="Missing authentication. Provide x-tenant-id and x-user-id headers.",
-        )
-
-    # Map plan from header (dev) or Clerk org metadata (prod).
-    plan_str = request.headers.get("x-tenant-plan", "free").upper()
-    try:
-        plan = TenantPlan[plan_str]
-    except KeyError:
-        plan = TenantPlan.FREE
-
-    return AuthContext(tenant_id=tenant_id, user_id=user_id, plan=plan)
+    """Authenticate request via Clerk JWT or dev headers."""
+    return await authenticate_request(request)
 
 
 # ---------------------------------------------------------------------------

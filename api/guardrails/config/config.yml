@@ -1,0 +1,44 @@
+# ManualIQ NeMo Guardrails Configuration
+#
+# Main configuration for input/output rails.
+# Reference: ARCHITECTURE.md Section 3.16, KNOWN_ISSUES.md Section 4.1-4.3
+
+models:
+  - type: main
+    engine: openai
+    model: gpt-4o-mini
+    parameters:
+      temperature: 0.1
+      max_tokens: 256
+
+# Input rails: run BEFORE the query reaches the RAG pipeline.
+input_flows:
+  - self check input
+  - check prompt injection
+  - check pii input
+
+# Output rails: run AFTER the LLM generates a response.
+output_flows:
+  - self check output
+  - check pii output
+  - check language output
+
+# Rails configuration.
+rails:
+  input:
+    flows:
+      - self check input
+      - check prompt injection
+      - check pii input
+  output:
+    flows:
+      - self check output
+      - check pii output
+      - check language output
+
+# Safety settings.
+safety:
+  jailbreak_detection: true
+
+# Limit LLM calls for guardrail checks to keep latency low.
+max_tokens: 256
