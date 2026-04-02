@@ -36,8 +36,9 @@ logger = logging.getLogger(__name__)
 _VOYAGE_API_URL = "https://api.voyageai.com/v1/embeddings"
 
 # Models: full for indexing, lite for queries (shared embedding space).
-VOYAGE_INDEX_MODEL = "voyage-3"
-VOYAGE_QUERY_MODEL = "voyage-3-lite"
+# Voyage 4 series: all embeddings are compatible with each other.
+VOYAGE_INDEX_MODEL = "voyage-4"
+VOYAGE_QUERY_MODEL = "voyage-4-lite"
 
 # Batch size for Voyage API (max 128 texts per request).
 _VOYAGE_BATCH_SIZE = 64

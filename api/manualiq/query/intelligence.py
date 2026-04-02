@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -531,3 +531,70 @@ def create_default_manufacturing_glossary() -> TechnicalGlossary:
     )
 
     return glossary
+
+
+# ---------------------------------------------------------------------------
+# Async variants for use in FastAPI (fixes _sync_route hack)
+# ---------------------------------------------------------------------------
+
+
+async def classify_intent_async(
+    query: str,
+    *,
+    llm_fn: Callable[[str], Awaitable[str]] | None = None,
+) -> IntentResult:
+    """Async version of classify_intent for FastAPI context.
+
+    Uses an async LLM callable (e.g., LLMGateway.route) instead of
+    the sync wrapper that doesn't work inside running event loops.
+    """
+    if llm_fn is None:
+        return _classify_heuristic(query)
+
+    import json
+
+    prompt = _INTENT_CLASSIFICATION_PROMPT.format(query=query)
+
+    try:
+        response = await llm_fn(prompt)
+        cleaned = re.sub(r"```(?:json)?\s*", "", response).strip().rstrip("`")
+        data = json.loads(cleaned)
+
+        intent_str = data.get("intent", "specific")
+        try:
+            intent = QueryIntent(intent_str)
+        except ValueError:
+            intent = QueryIntent.SPECIFIC
+
+        return IntentResult(
+            intent=intent,
+            confidence=float(data.get("confidence", 0.5)),
+            clarification_prompt=data.get("clarification"),
+            expanded_query=data.get("expanded"),
+        )
+    except (json.JSONDecodeError, KeyError, TypeError) as exc:
+        logger.warning("Async intent classification parse error: %s", exc)
+        return _classify_heuristic(query)
+
+
+async def expand_query_crosslingual_async(
+    query: str,
+    *,
+    llm_fn: Callable[[str], Awaitable[str]] | None = None,
+) -> list[str]:
+    """Async version of expand_query_crosslingual for FastAPI context."""
+    queries = [query]
+
+    if llm_fn is None:
+        return queries
+
+    try:
+        prompt = _QUERY_EXPANSION_PROMPT.format(query=query)
+        en_query = (await llm_fn(prompt)).strip()
+        if en_query and en_query.lower() != query.lower():
+            queries.append(en_query)
+            logger.debug("Query expanded async: ES='%s' -> EN='%s'", query, en_query)
+    except Exception as exc:
+        logger.warning("Async cross-lingual expansion failed: %s", exc)
+
+    return queries
