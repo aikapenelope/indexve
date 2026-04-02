@@ -1,0 +1,83 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  backend:
+    name: Backend (Python)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: api
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m venv .venv
+          source .venv/bin/activate
+          pip install -r requirements.txt
+
+      - name: Lint (ruff)
+        run: |
+          source .venv/bin/activate
+          ruff check manualiq/ guardrails/ tests/
+
+      - name: Format check (ruff)
+        run: |
+          source .venv/bin/activate
+          ruff format --check manualiq/ guardrails/ tests/
+
+      - name: Type check (pyright)
+        run: |
+          source .venv/bin/activate
+          pyright manualiq/ guardrails/ tests/
+
+      - name: Tests (pytest)
+        run: |
+          source .venv/bin/activate
+          python -m pytest tests/ -v --tb=short
+
+  frontend:
+    name: Frontend (TypeScript)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Type check (tsc)
+        run: npx tsc --noEmit
+
+  docker:
+    name: Docker build
+    runs-on: ubuntu-latest
+    needs: [backend, frontend]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build API image
+        run: docker build -t manualiq-api:latest ./api
+
+      - name: Build Frontend image
+        run: docker build -t manualiq-frontend:latest ./frontend
