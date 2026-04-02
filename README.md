@@ -88,6 +88,7 @@ asyncio.run(initialize_collection())
 - [docs/PRD.md](docs/PRD.md) — Requisitos del producto, usuarios, funcionalidades
 - [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md) — 29 problemas documentados con mitigaciones + roadmap
 - [docs/DIAGRAMS.md](docs/DIAGRAMS.md) — Diagramas de arquitectura, flujos de query/ingestion, experiencia de usuario
+- [docs/AUDIT.md](docs/AUDIT.md) — Auditoria de componentes vs docs oficiales, gaps, y mejoras priorizadas
 
 ## Licencia
 
