@@ -33,6 +33,45 @@ class InboundEmail:
     tenant_id: str  # Extracted from recipient address.
 
 
+async def verify_email_sender(
+    redis_client: object,
+    sender_email: str,
+    tenant_id: str,
+) -> bool:
+    """Verify that the sender email is authorized for this tenant.
+
+    Checks a whitelist in Redis. If no whitelist exists for the tenant,
+    allows all senders (open access for initial setup).
+
+    Key: email:whitelist:{tenant_id}
+    Value: set of authorized email addresses
+
+    Args:
+        redis_client: Async Redis client.
+        sender_email: The sender's email address.
+        tenant_id: The tenant derived from the recipient address.
+
+    Returns:
+        True if authorized, False if blocked.
+    """
+    key = f"email:whitelist:{tenant_id}"
+    # Check if whitelist exists for this tenant.
+    exists = await redis_client.exists(key)  # type: ignore[union-attr]
+    if not exists:
+        # No whitelist configured = open access (for initial setup).
+        return True
+
+    # Check if sender is in the whitelist.
+    is_member = await redis_client.sismember(key, sender_email.lower())  # type: ignore[union-attr]
+    if not is_member:
+        logger.warning(
+            "Email sender %s not authorized for tenant %s",
+            sender_email,
+            tenant_id,
+        )
+    return bool(is_member)
+
+
 def parse_inbound_email(payload: dict[str, object]) -> InboundEmail | None:
     """Parse a Resend inbound webhook payload.
 
