@@ -2,40 +2,33 @@
 
 import type { ChatModelAdapter, ChatModelRunResult } from "@assistant-ui/react";
 
-/**
- * API base URL for the ManualIQ FastAPI backend.
- * In production, this comes from NEXT_PUBLIC_API_URL env var.
- * In development, defaults to localhost:8000.
- */
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
-/**
- * SSE event from the /query/stream endpoint.
- */
+interface SourceChunk {
+  doc_id: string;
+  section_path: string;
+  page_ref: string;
+  score: number;
+  safety_level: string;
+  doc_language: string;
+  equipment: string;
+  text_preview: string;
+}
+
 interface StreamEvent {
   type: "text" | "sources" | "error";
   content?: string;
-  sources?: Array<{
-    doc_id: string;
-    section_path: string;
-    page_ref: string;
-    score: number;
-    safety_level: string;
-  }>;
+  sources?: SourceChunk[];
 }
 
 /**
- * ChatModelAdapter that connects assistant-ui to the ManualIQ FastAPI backend.
- *
- * Uses the streaming endpoint (/query/stream) for token-by-token response.
- * First token arrives in ~500ms, full response streams over 2-4 seconds.
- *
- * The tenant_id and user_id are injected via headers (server-side in
- * production via Clerk middleware; dev mode uses hardcoded values).
+ * Mutable array holding the sources from the last query.
+ * Read by the SourceViewer component in page.tsx.
  */
+export let lastSources: SourceChunk[] = [];
+
 export const manualiqAdapter: ChatModelAdapter = {
   async *run({ messages, abortSignal }): AsyncGenerator<ChatModelRunResult> {
-    // Extract the last user message as the query.
     const lastMessage = messages[messages.length - 1];
     const query =
       lastMessage?.role === "user"
@@ -57,11 +50,13 @@ export const manualiqAdapter: ChatModelAdapter = {
       return;
     }
 
+    // Reset sources for this query.
+    lastSources = [];
+
     const response = await fetch(`${API_URL}/query/stream`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        // Dev mode headers. In production, Clerk middleware injects these.
         "x-tenant-id": "dev_tenant",
         "x-user-id": "dev_user",
       },
@@ -82,7 +77,6 @@ export const manualiqAdapter: ChatModelAdapter = {
       return;
     }
 
-    // Read the SSE stream.
     const reader = response.body?.getReader();
     if (!reader) {
       yield {
@@ -102,7 +96,6 @@ export const manualiqAdapter: ChatModelAdapter = {
 
         buffer += decoder.decode(value, { stream: true });
 
-        // Process complete SSE lines.
         const lines = buffer.split("\n");
         buffer = lines.pop() ?? "";
 
@@ -121,8 +114,10 @@ export const manualiqAdapter: ChatModelAdapter = {
                 content: [{ type: "text" as const, text: accumulated }],
               };
             }
-            // Sources events are received but not rendered as text.
-            // The frontend can use them for the PDF viewer sidebar.
+
+            if (event.type === "sources" && event.sources) {
+              lastSources = event.sources;
+            }
           } catch {
             // Skip malformed JSON lines.
           }
@@ -132,7 +127,6 @@ export const manualiqAdapter: ChatModelAdapter = {
       reader.releaseLock();
     }
 
-    // Final yield with complete text.
     if (accumulated) {
       yield {
         content: [{ type: "text" as const, text: accumulated }],
