@@ -398,4 +398,107 @@ def blocks_to_chunks(
         )
         chunks.append(chunk)
 
+    # Resolve cross-references between chunks of the same document.
+    _resolve_related_chunks(chunks)
+
     return chunks
+
+
+# ---------------------------------------------------------------------------
+# Cross-reference resolution
+# ---------------------------------------------------------------------------
+
+# Patterns for cross-references in technical manuals.
+_XREF_PATTERN = re.compile(
+    r"(?:ver|see|refer(?:irse)? a|consultar|ref\.?)\s+"
+    r"(?:paso|step|seccion|section|capitulo|chapter|tabla|table)?\s*"
+    r"(\d+(?:\.\d+)*)",
+    re.IGNORECASE,
+)
+
+
+def _resolve_related_chunks(chunks: list[Chunk]) -> None:
+    """Resolve cross-references between chunks of the same document.
+
+    Scans each chunk for patterns like "ver paso 4.2.3", "see section 3",
+    "referirse a tabla 5.1" and links them to chunks whose section_path
+    contains the referenced number.
+
+    Modifies chunks in-place by populating the related_chunks field.
+    """
+    if not chunks:
+        return
+
+    # Build index: section number -> chunk hash.
+    section_index: dict[str, str] = {}
+    for chunk in chunks:
+        path = chunk.metadata.section_path
+        if path:
+            # Extract numbers from section path (e.g., "4.3 > Cylinder Head" -> "4.3").
+            numbers = re.findall(r"\d+(?:\.\d+)*", path)
+            for num in numbers:
+                section_index[num] = chunk.metadata.hash_sha256
+
+    # Scan each chunk for cross-references.
+    for chunk in chunks:
+        refs = _XREF_PATTERN.findall(chunk.text)
+        related: list[str] = list(chunk.metadata.related_chunks)
+        for ref_num in refs:
+            target_hash = section_index.get(ref_num)
+            if target_hash and target_hash != chunk.metadata.hash_sha256:
+                if target_hash not in related:
+                    related.append(target_hash)
+        chunk.metadata.related_chunks = related
+
+
+# ---------------------------------------------------------------------------
+# Heading / section path extraction from markdown
+# ---------------------------------------------------------------------------
+
+# Matches markdown headings: ## Cap 4, ### 3.1 Cylinder Head, etc.
+_HEADING_PATTERN = re.compile(r"^(#{1,6})\s+(.+)$", re.MULTILINE)
+
+
+def extract_section_paths(markdown_text: str) -> list[tuple[str, str]]:
+    """Extract section paths from markdown headings.
+
+    Parses Docling/LlamaParse markdown output to build hierarchical
+    section paths like "Cap 4 > 3.1 Cylinder Head Installation".
+
+    Args:
+        markdown_text: Full markdown text from the parser.
+
+    Returns:
+        List of (section_path, content) tuples where content is the
+        text between this heading and the next.
+    """
+    headings = list(_HEADING_PATTERN.finditer(markdown_text))
+    if not headings:
+        return [("", markdown_text)]
+
+    sections: list[tuple[str, str]] = []
+    # Track heading hierarchy by level.
+    hierarchy: dict[int, str] = {}
+
+    for i, match in enumerate(headings):
+        level = len(match.group(1))  # Number of # characters.
+        title = match.group(2).strip()
+
+        # Update hierarchy at this level, clear deeper levels.
+        hierarchy[level] = title
+        for deeper in list(hierarchy.keys()):
+            if deeper > level:
+                del hierarchy[deeper]
+
+        # Build path from hierarchy.
+        path = " > ".join(hierarchy[lvl] for lvl in sorted(hierarchy.keys()))
+
+        # Extract content between this heading and the next.
+        start = match.end()
+        end = headings[i + 1].start() if i + 1 < len(headings) else len(markdown_text)
+        content = markdown_text[start:end].strip()
+
+        if content:
+            sections.append((path, content))
+
+    return sections

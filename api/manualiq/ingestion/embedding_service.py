@@ -24,6 +24,7 @@ import httpx
 from qdrant_client import AsyncQdrantClient, models
 
 from manualiq.ingestion.chunker import Chunk
+from manualiq.ingestion.sparse_vectors import SparseVectorizer
 from manualiq.middleware.resilience import (
     EmbeddingCache,
     RetryConfig,
@@ -80,6 +81,7 @@ class EmbeddingService:
         self._retry_config = retry_config or RetryConfig()
         self._ollama_url = ollama_url
         self._http = httpx.AsyncClient(timeout=60.0)
+        self._sparse = SparseVectorizer()
 
     async def close(self) -> None:
         """Clean up HTTP client."""
@@ -264,9 +266,10 @@ class EmbeddingService:
         embeddings: list[EmbeddingResult],
         collection_name: str = "manualiq",
     ) -> int:
-        """Upsert embedded chunks to Qdrant with full metadata.
+        """Upsert embedded chunks to Qdrant with hybrid vectors.
 
-        Uses the shard_key=tenant_id for native tenant isolation.
+        Each point gets both dense (Voyage) and sparse (BM25) vectors
+        for hybrid search. Uses shard_key=tenant_id for tenant isolation.
 
         Args:
             chunks: The chunks with metadata.
@@ -276,9 +279,12 @@ class EmbeddingService:
         Returns:
             Number of points upserted.
         """
+        # Generate sparse vectors for all chunks.
+        sparse_vectors = self._sparse.vectorize_batch([c.text for c in chunks])
+
         points: list[models.PointStruct] = []
 
-        for chunk, emb in zip(chunks, embeddings):
+        for chunk, emb, sparse in zip(chunks, embeddings, sparse_vectors):
             meta = chunk.metadata
             point_id = str(uuid.uuid5(uuid.NAMESPACE_URL, meta.hash_sha256))
 
@@ -301,10 +307,17 @@ class EmbeddingService:
                 "text": chunk.text,
             }
 
+            # Named vectors: "dense" (Voyage) + "sparse" (BM25).
             points.append(
                 models.PointStruct(
                     id=point_id,
-                    vector=emb.vector,
+                    vector={
+                        "dense": emb.vector,
+                        "sparse": models.SparseVector(
+                            indices=sparse.indices,
+                            values=sparse.values,
+                        ),
+                    },
                     payload=payload,
                 )
             )
