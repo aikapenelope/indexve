@@ -21,7 +21,16 @@ from pathlib import Path
 from typing import Any
 
 import redis.asyncio as aioredis
-from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi import (
+    Depends,
+    FastAPI,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
@@ -779,6 +788,97 @@ async def ingest_endpoint(
     )
 
 
+@app.post("/ingest/upload", response_model=IngestResponse)
+async def ingest_upload_endpoint(
+    file: UploadFile = File(...),
+    equipment: str = Form(""),
+    manufacturer: str = Form(""),
+    doc_language: str = Form("en"),
+    procedure_type: str = Form("informativo"),
+    auth: AuthContext = Depends(get_auth),
+) -> IngestResponse:
+    """Upload and ingest a PDF document via multipart form.
+
+    Accepts a file upload from the frontend, saves it to the corpus
+    directory, then runs the same parse -> chunk -> embed -> upsert
+    pipeline as /ingest.
+    """
+    from manualiq.ingestion.chunker import blocks_to_chunks, classify_and_split_blocks
+    from manualiq.ingestion.parser import parse_document
+
+    if not file.filename or not file.filename.lower().endswith(
+        (".pdf", ".docx", ".pptx")
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="Only PDF, DOCX, and PPTX files are supported.",
+        )
+
+    # Save uploaded file to corpus directory.
+    import os
+
+    corpus_dir = os.environ.get("CORPUS_DIR", "/corpus")
+    tenant_dir = Path(corpus_dir) / auth.tenant_id
+    tenant_dir.mkdir(parents=True, exist_ok=True)
+
+    file_path = tenant_dir / file.filename
+    content = await file.read()
+    file_path.write_bytes(content)
+
+    logger.info(
+        "Uploaded %s (%d bytes) for tenant %s",
+        file.filename,
+        len(content),
+        auth.tenant_id,
+    )
+
+    # Parse.
+    parse_result = parse_document(file_path)
+    if not parse_result.text.strip():
+        raise HTTPException(
+            status_code=422,
+            detail=f"Failed to parse document: {parse_result.error}",
+        )
+
+    # Chunk.
+    blocks = classify_and_split_blocks(parse_result.text)
+    chunks = blocks_to_chunks(
+        blocks,
+        doc_id=file_path.stem,
+        tenant_id=auth.tenant_id,
+        equipment=equipment,
+        manufacturer=manufacturer,
+        doc_language=doc_language,
+        procedure_type=procedure_type,
+    )
+
+    # Embed + upsert.
+    result = await state.embeddings.index_chunks(chunks)
+
+    # Track in Redis.
+    doc_key = f"doc:{auth.tenant_id}:{file_path.stem}"
+    await state.redis.hset(  # type: ignore[misc]
+        doc_key,
+        mapping={
+            "filename": file.filename,
+            "tenant_id": auth.tenant_id,
+            "equipment": equipment,
+            "manufacturer": manufacturer,
+            "chunks": str(result["upserted"]),
+            "parser": parse_result.backend.value,
+            "status": "indexed",
+            "indexed_at": datetime.now(timezone.utc).isoformat(),
+        },
+    )
+
+    return IngestResponse(
+        status="indexed",
+        doc_id=file_path.stem,
+        chunks=result["upserted"],
+        parser=parse_result.backend.value,
+    )
+
+
 @app.get("/history", response_model=HistoryResponse)
 async def history_endpoint(
     auth: AuthContext = Depends(get_auth),
@@ -920,3 +1020,144 @@ async def feedback_endpoint(
     )
 
     return FeedbackResponse(status="recorded", feedback_id=feedback_id)
+
+
+# ---------------------------------------------------------------------------
+# Email channel (PRD 3.5)
+# ---------------------------------------------------------------------------
+
+
+@app.post("/email/inbound")
+async def email_inbound_endpoint(request: Request) -> JSONResponse:
+    """Receive inbound email from Resend webhook.
+
+    Flow: Resend delivers email -> parse -> RAG pipeline -> send response.
+    No auth required (webhook is authenticated by Resend signature).
+    """
+    from manualiq.channels.email import (
+        format_email_response,
+        parse_inbound_email,
+        send_email_response,
+    )
+
+    payload = await request.json()
+    email = parse_inbound_email(payload)
+
+    if email is None:
+        return JSONResponse({"status": "ignored", "reason": "invalid email"})
+
+    logger.info(
+        "Inbound email from %s for tenant %s: %s",
+        email.sender,
+        email.tenant_id,
+        email.subject,
+    )
+
+    # Run the same pipeline as /query but with tenant from email address.
+    # Simplified: embed -> retrieve -> rerank -> generate.
+    try:
+        query_embedding = await state.embeddings.embed_query(email.body_text)
+        query_sparse = state.sparse.vectorize(email.body_text)
+
+        tenant_filter = models.Filter(
+            must=[
+                models.FieldCondition(
+                    key="tenant_id",
+                    match=models.MatchValue(value=email.tenant_id),
+                )
+            ]
+        )
+        search_results = await state.qdrant.query_points(
+            collection_name="manualiq",
+            prefetch=[
+                models.Prefetch(
+                    query=query_embedding.vector,
+                    using="dense",
+                    limit=20,
+                    filter=tenant_filter,
+                ),
+                models.Prefetch(
+                    query=models.SparseVector(
+                        indices=query_sparse.indices,
+                        values=query_sparse.values,
+                    ),
+                    using="sparse",
+                    limit=20,
+                    filter=tenant_filter,
+                ),
+            ],
+            query=models.FusionQuery(fusion=models.Fusion.RRF),
+            limit=20,
+            with_payload=True,
+        )
+
+        retrieved: list[RetrievedChunk] = []
+        for point in search_results.points:
+            p: dict[str, Any] = point.payload or {}
+            retrieved.append(
+                RetrievedChunk(
+                    text=str(p.get("text", "")),
+                    score=point.score,
+                    doc_id=str(p.get("doc_id", "")),
+                    tenant_id=str(p.get("tenant_id", "")),
+                    section_path=str(p.get("section_path", "")),
+                    page_ref=str(p.get("page_ref", "")),
+                    safety_level=str(p.get("safety_level", "informativo")),
+                    hash_sha256=str(p.get("hash_sha256", "")),
+                    doc_language=str(p.get("doc_language", "en")),
+                    equipment=str(p.get("equipment", "")),
+                    part_numbers=p.get("part_numbers", []),
+                )
+            )
+
+        deduped = deduplicate_chunks(retrieved)
+        tenant_valid = validate_tenant_chunks(deduped, email.tenant_id)
+        rerank_result = await state.reranker.rerank(email.body_text, tenant_valid)
+        top_chunks = rerank_result.chunks
+
+        confidence, best_score = evaluate_confidence(top_chunks)
+
+        if confidence == QueryConfidence.NONE:
+            answer = (
+                "No encontre informacion sobre esto en los manuales disponibles. "
+                "Por favor reformule la pregunta."
+            )
+        else:
+            prompt = build_context_prompt(top_chunks, email.body_text)
+            llm_response = await state.llm.generate(prompt, model="claude")
+            answer = llm_response.text
+
+        sources = [
+            {
+                "doc_id": c.doc_id,
+                "section_path": c.section_path,
+                "page_ref": c.page_ref,
+                "score": c.score,
+            }
+            for c in top_chunks
+        ]
+
+        email_body = format_email_response(
+            query=email.body_text,
+            answer=answer,
+            sources=sources,
+            confidence=confidence.value,
+            score=best_score,
+        )
+
+        resend_key = _read_secret("RESEND_API_KEY_FILE")
+        if resend_key:
+            await send_email_response(
+                resend_api_key=resend_key,
+                to_email=email.sender,
+                subject=f"Re: {email.subject}"
+                if email.subject
+                else "ManualIQ - Respuesta",
+                body=email_body,
+            )
+
+        return JSONResponse({"status": "processed", "tenant": email.tenant_id})
+
+    except Exception as exc:
+        logger.error("Email processing failed: %s", exc)
+        return JSONResponse({"status": "error", "detail": str(exc)}, status_code=500)
