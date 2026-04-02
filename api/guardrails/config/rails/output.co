@@ -1,0 +1,55 @@
+# ManualIQ Output Rails — Colang 2.0
+#
+# Addresses issues:
+# - 4.3: PII in output (redact before sending to user)
+# - 3.1: Language check (ensure response is in Spanish)
+#
+# Output rails run after the LLM generates a response but before
+# it reaches the user.
+
+# --- Self check output (built-in NeMo rail) ---
+# Verifies the output is appropriate and on-topic.
+
+flow self check output
+  $output = bot said
+
+  $is_safe = ..."Consider the following AI assistant response: '{$output}'. \
+    Is this response appropriate for a technical manufacturing assistant? \
+    Check that it: \
+    1. Does not contain harmful, offensive, or toxic content. \
+    2. Does not claim to be a different AI or ignore its role. \
+    3. Does not provide medical, legal, or financial advice. \
+    4. Stays within the scope of technical manuals and equipment. \
+    Respond ONLY with True or False."
+
+  if not $is_safe
+    bot say "Lo siento, no pude generar una respuesta apropiada. Por favor, reformule su pregunta."
+    abort
+
+
+# --- PII in output ---
+# Catch any PII that leaked through from documents or LLM generation.
+
+flow check pii output
+  $output = bot said
+
+  $has_pii = execute check_pii(text=$output)
+
+  if $has_pii
+    $clean_output = execute redact_pii(text=$output)
+    bot say $clean_output
+    abort
+
+
+# --- Language check ---
+# Ensure the response is in Spanish (issue 3.1).
+# The LLM sometimes "forgets" to respond in Spanish when chunks are in English.
+
+flow check language output
+  $output = bot said
+
+  $language = execute detect_language(text=$output)
+
+  if $language != "es"
+    bot say "Lo siento, hubo un error en el idioma de la respuesta. Por favor, intente de nuevo."
+    abort
