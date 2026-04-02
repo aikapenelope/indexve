@@ -1,0 +1,283 @@
+# ManualIQ — Regression Evaluation Dataset
+#
+# 50 questions covering the key scenarios for manufacturing RAG.
+# Used by Phoenix Evals to measure faithfulness, answer relevancy,
+# citation accuracy, and hallucination rate.
+#
+# Categories:
+# - specific: Direct technical questions with clear answers
+# - procedure: Step-by-step procedure requests
+# - safety: Questions involving DANGER/WARNING/CAUTION
+# - part_number: Queries about specific part numbers
+# - cross_lingual: Spanish queries about English documents
+# - ambiguous: Intentionally vague queries (should ask for clarification)
+# - out_of_scope: Non-technical queries (should refuse)
+
+questions:
+  # --- Specific technical questions ---
+  - id: spec_01
+    query: "Cual es el torque de apriete de la culata del motor Caterpillar C7?"
+    category: specific
+    expected_behavior: "Should return torque value with units and citation"
+    expected_fields: ["torque", "Nm", "culata", "C7"]
+
+  - id: spec_02
+    query: "Que tipo de aceite usa el motor C7?"
+    category: specific
+    expected_behavior: "Should return oil specification with grade"
+    expected_fields: ["aceite", "SAE", "viscosidad"]
+
+  - id: spec_03
+    query: "Cual es la presion de aceite normal del motor C7 en ralenti?"
+    category: specific
+    expected_behavior: "Should return pressure range with units"
+    expected_fields: ["presion", "psi", "kPa", "ralenti"]
+
+  - id: spec_04
+    query: "Cual es la temperatura maxima de operacion del refrigerante?"
+    category: specific
+    expected_behavior: "Should return temperature with units"
+    expected_fields: ["temperatura", "grados", "refrigerante"]
+
+  - id: spec_05
+    query: "Que gap deben tener las bujias del motor?"
+    category: specific
+    expected_behavior: "Should return gap measurement"
+    expected_fields: ["gap", "mm", "bujia"]
+
+  # --- Procedure questions ---
+  - id: proc_01
+    query: "Como se cambia el filtro de aceite del motor C7?"
+    category: procedure
+    expected_behavior: "Should return numbered steps in order"
+    expected_fields: ["paso", "filtro", "aceite"]
+
+  - id: proc_02
+    query: "Cual es el procedimiento para ajustar las valvulas?"
+    category: procedure
+    expected_behavior: "Should return complete procedure with steps"
+    expected_fields: ["valvula", "ajuste", "paso"]
+
+  - id: proc_03
+    query: "Pasos para reemplazar la correa del alternador"
+    category: procedure
+    expected_behavior: "Should return step-by-step procedure"
+    expected_fields: ["correa", "alternador", "paso"]
+
+  - id: proc_04
+    query: "Procedimiento de mantenimiento preventivo cada 500 horas"
+    category: procedure
+    expected_behavior: "Should return maintenance checklist"
+    expected_fields: ["500 horas", "mantenimiento", "preventivo"]
+
+  - id: proc_05
+    query: "Como se purga el sistema de combustible?"
+    category: procedure
+    expected_behavior: "Should return purge procedure"
+    expected_fields: ["purga", "combustible", "paso"]
+
+  # --- Safety questions ---
+  - id: safe_01
+    query: "Hay alguna advertencia de seguridad para trabajar en el sistema de refrigeracion?"
+    category: safety
+    expected_behavior: "Should show DANGER/WARNING first, then procedure"
+    expected_fields: ["DANGER", "WARNING", "refrigeracion", "presion"]
+
+  - id: safe_02
+    query: "Que precauciones debo tomar al desconectar la bateria?"
+    category: safety
+    expected_behavior: "Should include safety warnings prominently"
+    expected_fields: ["CAUTION", "bateria", "desconectar"]
+
+  - id: safe_03
+    query: "Es peligroso abrir el radiador con el motor caliente?"
+    category: safety
+    expected_behavior: "Should strongly warn about danger"
+    expected_fields: ["DANGER", "PELIGRO", "radiador", "caliente", "presion"]
+
+  - id: safe_04
+    query: "Que equipo de proteccion necesito para cambiar el aceite?"
+    category: safety
+    expected_behavior: "Should list PPE requirements"
+    expected_fields: ["guantes", "proteccion", "gafas"]
+
+  - id: safe_05
+    query: "Procedimiento de bloqueo y etiquetado para mantenimiento"
+    category: safety
+    expected_behavior: "Should return lockout/tagout procedure"
+    expected_fields: ["bloqueo", "etiquetado", "LOTO", "WARNING"]
+
+  # --- Part number questions ---
+  - id: part_01
+    query: "Cual es el part number del filtro de aceite del C7?"
+    category: part_number
+    expected_behavior: "Should return exact part number"
+    expected_fields: ["part number", "filtro"]
+
+  - id: part_02
+    query: "Necesito el numero de parte del rodamiento principal"
+    category: part_number
+    expected_behavior: "Should return part number with description"
+    expected_fields: ["rodamiento", "part number"]
+
+  - id: part_03
+    query: "Donde consigo la junta de la culata AB-4521-CX?"
+    category: part_number
+    expected_behavior: "Should recognize the part number and provide info"
+    expected_fields: ["AB-4521-CX", "junta", "culata"]
+
+  - id: part_04
+    query: "Que filtro de aire es compatible con el motor C7?"
+    category: part_number
+    expected_behavior: "Should return compatible filter part numbers"
+    expected_fields: ["filtro", "aire", "compatible"]
+
+  - id: part_05
+    query: "Lista de repuestos para el mantenimiento de 1000 horas"
+    category: part_number
+    expected_behavior: "Should return parts list with numbers"
+    expected_fields: ["repuestos", "1000 horas"]
+
+  # --- Cross-lingual questions ---
+  - id: xling_01
+    query: "Cual es el cylinder head torque specification?"
+    category: cross_lingual
+    expected_behavior: "Should understand mixed ES/EN and respond in Spanish"
+    expected_fields: ["torque", "culata", "cylinder head"]
+
+  - id: xling_02
+    query: "Que dice el manual sobre el crankshaft?"
+    category: cross_lingual
+    expected_behavior: "Should translate crankshaft to ciguenal in response"
+    expected_fields: ["ciguenal", "crankshaft"]
+
+  - id: xling_03
+    query: "Necesito la informacion del turbocharger del C7"
+    category: cross_lingual
+    expected_behavior: "Should handle turbocharger/turbocompresor"
+    expected_fields: ["turbo", "turbocompresor"]
+
+  - id: xling_04
+    query: "Cual es el bearing clearance del motor?"
+    category: cross_lingual
+    expected_behavior: "Should translate bearing clearance"
+    expected_fields: ["rodamiento", "holgura", "clearance"]
+
+  - id: xling_05
+    query: "Procedimiento para cambiar el gasket de la culata"
+    category: cross_lingual
+    expected_behavior: "Should handle gasket/junta/empaque"
+    expected_fields: ["junta", "empaque", "gasket"]
+
+  # --- Listing/comparison questions ---
+  - id: list_01
+    query: "Lista todas las especificaciones de torque del motor C7"
+    category: listing
+    expected_behavior: "Should return comprehensive torque table"
+    expected_fields: ["torque", "Nm", "multiple values"]
+
+  - id: list_02
+    query: "Cuales son todos los intervalos de mantenimiento?"
+    category: listing
+    expected_behavior: "Should return maintenance schedule"
+    expected_fields: ["250 horas", "500 horas", "1000 horas"]
+
+  - id: list_03
+    query: "Que sensores tiene el motor C7 y donde estan ubicados?"
+    category: listing
+    expected_behavior: "Should list sensors with locations"
+    expected_fields: ["sensor", "ubicacion", "temperatura", "presion"]
+
+  - id: comp_01
+    query: "Diferencia entre mantenimiento preventivo y correctivo"
+    category: comparison
+    expected_behavior: "Should compare both types"
+    expected_fields: ["preventivo", "correctivo", "diferencia"]
+
+  - id: comp_02
+    query: "Que aceite es mejor, SAE 15W-40 o SAE 10W-30 para el C7?"
+    category: comparison
+    expected_behavior: "Should compare with conditions"
+    expected_fields: ["15W-40", "10W-30", "temperatura"]
+
+  # --- Ambiguous questions (should ask for clarification) ---
+  - id: amb_01
+    query: "cambio?"
+    category: ambiguous
+    expected_behavior: "Should ask for clarification"
+    expected_fields: ["especificar", "equipo", "procedimiento"]
+
+  - id: amb_02
+    query: "torque"
+    category: ambiguous
+    expected_behavior: "Should ask which component"
+    expected_fields: ["especificar", "componente"]
+
+  - id: amb_03
+    query: "filtro"
+    category: ambiguous
+    expected_behavior: "Should ask which filter type"
+    expected_fields: ["aceite", "aire", "combustible", "especificar"]
+
+  # --- Out of scope (should refuse) ---
+  - id: oos_01
+    query: "Cual es el precio del motor C7?"
+    category: out_of_scope
+    expected_behavior: "Should indicate this is outside manual scope"
+    expected_fields: ["no encontre", "manuales"]
+
+  - id: oos_02
+    query: "Que opinas de los motores Cummins?"
+    category: out_of_scope
+    expected_behavior: "Should not compare competitors"
+    expected_fields: ["no puedo", "comparar"]
+
+  - id: oos_03
+    query: "Ayudame con mi tarea de matematicas"
+    category: out_of_scope
+    expected_behavior: "Should refuse non-technical query"
+    expected_fields: ["manuales tecnicos", "no puedo"]
+
+  # --- Edge cases ---
+  - id: edge_01
+    query: "Cual es el torque de apriete de los pernos de la culata del motor Caterpillar C7 modelo 2019 segun el manual de servicio pagina 4-18?"
+    category: specific
+    expected_behavior: "Should handle very specific query with page reference"
+    expected_fields: ["torque", "4-18", "C7"]
+
+  - id: edge_02
+    query: "ver paso 4.2.3"
+    category: specific
+    expected_behavior: "Should resolve cross-reference"
+    expected_fields: ["4.2.3"]
+
+  - id: edge_03
+    query: "DANGER WARNING CAUTION que significan en el manual?"
+    category: safety
+    expected_behavior: "Should explain safety levels"
+    expected_fields: ["DANGER", "WARNING", "CAUTION", "peligro"]
+
+  - id: edge_04
+    query: "El manual dice 50 Nm pero mi torquimetro marca en lb-ft, cuanto es?"
+    category: specific
+    expected_behavior: "Should convert units or explain"
+    expected_fields: ["Nm", "lb-ft", "conversion"]
+
+  - id: edge_05
+    query: "Que hago si el motor no arranca despues de cambiar el filtro de combustible?"
+    category: procedure
+    expected_behavior: "Should provide troubleshooting steps"
+    expected_fields: ["purga", "combustible", "arranque", "paso"]
+
+  # --- Multi-document questions ---
+  - id: multi_01
+    query: "Que dice el SOP sobre el procedimiento de cambio de aceite y que dice el manual del fabricante?"
+    category: listing
+    expected_behavior: "Should cite both SOP and manufacturer manual"
+    expected_fields: ["SOP", "manual", "fabricante"]
+
+  - id: multi_02
+    query: "Segun la norma COVENIN y el manual del equipo, cual es el intervalo de inspeccion?"
+    category: listing
+    expected_behavior: "Should reference both COVENIN and equipment manual"
+    expected_fields: ["COVENIN", "inspeccion", "intervalo"]

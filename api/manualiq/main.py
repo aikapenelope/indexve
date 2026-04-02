@@ -32,7 +32,7 @@ from fastapi import (
     UploadFile,
 )
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from qdrant_client import AsyncQdrantClient, models
 
@@ -921,6 +921,41 @@ async def history_endpoint(
 
 
 # ---------------------------------------------------------------------------
+# PDF document serving (for WhatsApp/email attachments and web viewer)
+# ---------------------------------------------------------------------------
+
+
+@app.get("/documents/{doc_id}/pdf")
+async def serve_document_pdf(
+    doc_id: str,
+    auth: AuthContext = Depends(get_auth),
+) -> FileResponse:
+    """Serve the original PDF file for a document.
+
+    Used by all channels to attach the source PDF:
+    - Web: link in SourceViewer
+    - Email: Resend attachment
+    - WhatsApp: Twilio document message
+
+    Files are served from /corpus/{tenant_id}/ with tenant isolation.
+    """
+    corpus_dir = os.environ.get("CORPUS_DIR", "/corpus")
+    tenant_dir = Path(corpus_dir) / auth.tenant_id
+
+    # Search for the PDF by doc_id (filename stem).
+    for ext in (".pdf", ".PDF"):
+        pdf_path = tenant_dir / f"{doc_id}{ext}"
+        if pdf_path.is_file():
+            return FileResponse(
+                path=str(pdf_path),
+                media_type="application/pdf",
+                filename=pdf_path.name,
+            )
+
+    raise HTTPException(status_code=404, detail=f"PDF not found: {doc_id}")
+
+
+# ---------------------------------------------------------------------------
 # Admin metrics (PRD 4.1, requires admin role)
 # ---------------------------------------------------------------------------
 
@@ -1087,6 +1122,164 @@ async def feedback_endpoint(
     )
 
     return FeedbackResponse(status="recorded", feedback_id=feedback_id)
+
+
+# ---------------------------------------------------------------------------
+# WhatsApp channel via Twilio (PRD 3.5 / ROADMAP D1)
+# ---------------------------------------------------------------------------
+
+
+@app.post("/whatsapp/inbound")
+async def whatsapp_inbound_endpoint(request: Request) -> JSONResponse:
+    """Receive incoming WhatsApp message from Twilio webhook.
+
+    Flow: Twilio delivers message -> lookup tenant by phone whitelist ->
+    RAG pipeline -> send text response -> send source PDF attachment.
+    No login required — auth is via phone number whitelist per tenant.
+    """
+    from manualiq.channels.whatsapp import (
+        format_whatsapp_response,
+        lookup_tenant_by_phone,
+        parse_twilio_webhook,
+        send_whatsapp_document,
+        send_whatsapp_text,
+    )
+
+    form_data = dict(await request.form())
+    form_str = {k: str(v) for k, v in form_data.items()}
+    msg = parse_twilio_webhook(form_str)
+
+    if msg is None:
+        return JSONResponse({"status": "ignored"})
+
+    # Lookup tenant by phone whitelist.
+    user_info = await lookup_tenant_by_phone(state.redis, msg["sender"])
+    if user_info is None:
+        logger.warning("WhatsApp from unregistered phone: %s", msg["sender"])
+        return JSONResponse({"status": "unauthorized", "phone": msg["sender"]})
+
+    tenant_id = user_info["tenant_id"]
+    logger.info(
+        "WhatsApp from %s (tenant=%s): %s", msg["sender"], tenant_id, msg["body"][:50]
+    )
+
+    try:
+        # RAG pipeline (same as /query).
+        query_embedding = await state.embeddings.embed_query(msg["body"])
+        query_sparse = state.sparse.vectorize(msg["body"])
+
+        tenant_filter = models.Filter(
+            must=[
+                models.FieldCondition(
+                    key="tenant_id", match=models.MatchValue(value=tenant_id)
+                )
+            ]
+        )
+        search_results = await state.qdrant.query_points(
+            collection_name="manualiq",
+            prefetch=[
+                models.Prefetch(
+                    query=query_embedding.vector,
+                    using="dense",
+                    limit=20,
+                    filter=tenant_filter,
+                ),
+                models.Prefetch(
+                    query=models.SparseVector(
+                        indices=query_sparse.indices, values=query_sparse.values
+                    ),
+                    using="sparse",
+                    limit=20,
+                    filter=tenant_filter,
+                ),
+            ],
+            query=models.FusionQuery(fusion=models.Fusion.RRF),
+            limit=20,
+            with_payload=True,
+        )
+
+        retrieved: list[RetrievedChunk] = []
+        for point in search_results.points:
+            p: dict[str, Any] = point.payload or {}
+            retrieved.append(
+                RetrievedChunk(
+                    text=str(p.get("text", "")),
+                    score=point.score,
+                    doc_id=str(p.get("doc_id", "")),
+                    tenant_id=str(p.get("tenant_id", "")),
+                    section_path=str(p.get("section_path", "")),
+                    page_ref=str(p.get("page_ref", "")),
+                    safety_level=str(p.get("safety_level", "informativo")),
+                    hash_sha256=str(p.get("hash_sha256", "")),
+                    doc_language=str(p.get("doc_language", "en")),
+                    equipment=str(p.get("equipment", "")),
+                    part_numbers=p.get("part_numbers", []),
+                )
+            )
+
+        deduped = deduplicate_chunks(retrieved)
+        tenant_valid = validate_tenant_chunks(deduped, tenant_id)
+        rerank_result = await state.reranker.rerank(msg["body"], tenant_valid)
+        top_chunks = rerank_result.chunks
+        confidence, best_score = evaluate_confidence(top_chunks)
+
+        if confidence == QueryConfidence.NONE:
+            answer = "No encontre informacion sobre esto en los manuales disponibles."
+        else:
+            prompt = build_context_prompt(top_chunks, msg["body"])
+            llm_response = await state.llm.generate(prompt, model="claude")
+            answer = llm_response.text
+
+        sources = [
+            {
+                "doc_id": c.doc_id,
+                "section_path": c.section_path,
+                "page_ref": c.page_ref,
+                "score": c.score,
+            }
+            for c in top_chunks
+        ]
+
+        # Send text response via WhatsApp.
+        twilio_sid = _read_secret("TWILIO_ACCOUNT_SID_FILE")
+        twilio_token = _read_secret("TWILIO_AUTH_TOKEN_FILE")
+        twilio_from = os.environ.get("TWILIO_WHATSAPP_FROM", "")
+
+        wa_text = format_whatsapp_response(
+            answer, sources, confidence.value, best_score
+        )
+        await send_whatsapp_text(
+            to=msg["sender"],
+            body=wa_text,
+            twilio_sid=twilio_sid,
+            twilio_token=twilio_token,
+            twilio_from=twilio_from,
+        )
+
+        # Send top 2 source PDFs as document attachments (FREE within 24h window).
+        api_base = os.environ.get("API_PUBLIC_URL", "http://localhost:8000")
+        seen_docs: set[str] = set()
+        for src in sources[:2]:
+            doc_id = str(src["doc_id"])
+            if doc_id in seen_docs:
+                continue
+            seen_docs.add(doc_id)
+            pdf_url = f"{api_base}/documents/{doc_id}/pdf?x-tenant-id={tenant_id}&x-user-id={user_info['user_id']}"
+            await send_whatsapp_document(
+                to=msg["sender"],
+                document_url=pdf_url,
+                filename=f"{doc_id}.pdf",
+                caption=f"📄 {doc_id} — {src.get('section_path', '')}",
+                twilio_sid=twilio_sid,
+                twilio_token=twilio_token,
+                twilio_from=twilio_from,
+            )
+
+        return JSONResponse({"status": "processed", "tenant": tenant_id})
+
+    except Exception as exc:
+        logger.error("WhatsApp processing failed: %s", exc)
+        return JSONResponse({"status": "error", "detail": str(exc)}, status_code=500)
 
 
 # ---------------------------------------------------------------------------

@@ -154,8 +154,9 @@ async def send_email_response(
     subject: str,
     body: str,
     from_email: str = "ManualIQ <respuesta@manualiq.com>",
+    pdf_attachments: list[dict[str, str]] | None = None,
 ) -> bool:
-    """Send the response email via Resend API.
+    """Send the response email via Resend API with optional PDF attachments.
 
     Args:
         resend_api_key: Resend API key.
@@ -163,6 +164,7 @@ async def send_email_response(
         subject: Email subject (Re: original subject).
         body: Formatted email body.
         from_email: Sender address.
+        pdf_attachments: List of dicts with 'path' and 'filename' for PDF files.
 
     Returns:
         True if sent successfully.
@@ -172,15 +174,39 @@ async def send_email_response(
 
         resend.api_key = resend_api_key
 
-        resend.Emails.send(
-            {
-                "from": from_email,
-                "to": [to_email],
-                "subject": subject,
-                "text": body,
-            }
+        email_params: dict[str, object] = {
+            "from": from_email,
+            "to": [to_email],
+            "subject": subject,
+            "text": body,
+        }
+
+        # Attach PDFs if provided.
+        if pdf_attachments:
+            import base64
+            from pathlib import Path
+
+            attachments: list[dict[str, str]] = []
+            for att in pdf_attachments:
+                pdf_path = Path(att["path"])
+                if pdf_path.is_file():
+                    content = base64.b64encode(pdf_path.read_bytes()).decode("utf-8")
+                    attachments.append(
+                        {
+                            "filename": att.get("filename", pdf_path.name),
+                            "content": content,
+                            "type": "application/pdf",
+                        }
+                    )
+            if attachments:
+                email_params["attachments"] = attachments
+
+        resend.Emails.send(email_params)
+        logger.info(
+            "Email response sent to %s (attachments: %d)",
+            to_email,
+            len(pdf_attachments) if pdf_attachments else 0,
         )
-        logger.info("Email response sent to %s", to_email)
         return True
     except Exception as exc:
         logger.error("Failed to send email response to %s: %s", to_email, exc)

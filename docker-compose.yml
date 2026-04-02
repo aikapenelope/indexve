@@ -128,6 +128,10 @@ services:
       - OLLAMA_URL=http://ollama:11434
       - CLERK_SECRET_KEY_FILE=/run/secrets/clerk_key
       - RESEND_API_KEY_FILE=/run/secrets/resend_key
+      - TWILIO_ACCOUNT_SID_FILE=/run/secrets/twilio_sid
+      - TWILIO_AUTH_TOKEN_FILE=/run/secrets/twilio_token
+      - TWILIO_WHATSAPP_FROM=${TWILIO_WHATSAPP_FROM}
+      - API_PUBLIC_URL=${API_PUBLIC_URL:-http://localhost:8000}
     depends_on:
       qdrant:
         condition: service_started
@@ -231,3 +235,7 @@ secrets:
     file: ./secrets/clerk_key
   resend_key:
     file: ./secrets/resend_key
+  twilio_sid:
+    file: ./secrets/twilio_sid
+  twilio_token:
+    file: ./secrets/twilio_token

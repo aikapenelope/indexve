@@ -47,6 +47,9 @@ cryptography>=43.0.0
 # Email
 resend>=2.0,<3.0
 
+# WhatsApp (Twilio)
+twilio>=9.0,<10.0
+
 # Database
 sqlalchemy>=2.0,<3.0
 alembic>=1.14.0,<2.0
@@ -56,6 +59,7 @@ asyncpg>=0.30.0,<1.0
 pydantic>=2.0,<3.0
 httpx>=0.28.0,<1.0
 tenacity>=9.0,<10.0
+pyyaml>=6.0
 
 # Dev/test tools
 pyright>=1.1.390
