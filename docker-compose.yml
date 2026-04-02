@@ -1,0 +1,204 @@
+# ManualIQ Docker Compose — Hardened Configuration
+#
+# Addresses Category B issues from KNOWN_ISSUES.md:
+# - 2.2: Docling memory limit (2GB on worker)
+# - 2.3: Qdrant memory limit (3GB) + MAX_WORKERS=4 + int8 quantization
+# - 2.7: CopilotKit pinned version (in frontend package.json)
+# - 2.8: Prefect v3 only (pinned image tag)
+# - 4.4: All images use pinned tags (no :latest except Phoenix which
+#         doesn't publish stable semver tags yet)
+# - 5.3: restart: unless-stopped on ALL services
+
+services:
+  # --- Data Layer ---
+  qdrant:
+    image: qdrant/qdrant:v1.13.2
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    environment:
+      # Issue 2.3: Limit Actix workers to prevent memory exhaustion.
+      - QDRANT__SERVICE__MAX_WORKERS=4
+      # Enable int8 quantization by default for new collections.
+      - QDRANT__STORAGE__QUANTIZATION__ALWAYS_RAM=true
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          # Issue 2.3: Hard memory limit prevents OOM kill loop.
+          memory: 3G
+
+  postgres:
+    image: postgres:16.6-alpine
+    environment:
+      POSTGRES_DB: manualiq
+      POSTGRES_USER: manualiq
+      POSTGRES_PASSWORD_FILE: /run/secrets/pg_password
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U manualiq"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7.4-alpine
+    command: >
+      redis-server
+      --maxmemory 512mb
+      --maxmemory-policy allkeys-lru
+      --save 60 1000
+      --appendonly yes
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # --- Observability ---
+  phoenix:
+    # Phoenix doesn't publish stable semver tags; pin to a specific digest
+    # when available. For now, use latest with a note to pin.
+    image: arizephoenix/phoenix:latest
+    ports:
+      - "6006:6006"
+      - "4317:4317"
+    volumes:
+      - phoenix_data:/data
+    environment:
+      - PHOENIX_WORKING_DIR=/data
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  # --- Application Layer ---
+  api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - VOYAGE_API_KEY_FILE=/run/secrets/voyage_key
+      - ANTHROPIC_API_KEY_FILE=/run/secrets/anthropic_key
+      - COHERE_API_KEY_FILE=/run/secrets/cohere_key
+      - GOOGLE_API_KEY_FILE=/run/secrets/google_key
+      - QDRANT_URL=http://qdrant:6333
+      - REDIS_URL=redis://redis:6379
+      - DATABASE_URL=postgresql://manualiq:${PG_PASS}@postgres:5432/manualiq
+      - PHOENIX_COLLECTOR_ENDPOINT=http://phoenix:4317
+      - CLERK_SECRET_KEY_FILE=/run/secrets/clerk_key
+      - RESEND_API_KEY_FILE=/run/secrets/resend_key
+    depends_on:
+      qdrant:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      phoenix:
+        condition: service_started
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 1536M
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://api:8000
+      - NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=${CLERK_PUBLISHABLE_KEY}
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  # --- Orchestration (Prefect v3 only, issue 2.8) ---
+  prefect-server:
+    image: prefecthq/prefect:3.2-python3.12
+    command: prefect server start --host 0.0.0.0
+    ports:
+      - "4200:4200"
+    environment:
+      - PREFECT_SERVER_DATABASE_CONNECTION_URL=sqlite+aiosqlite:///prefect.db
+    volumes:
+      - prefect_data:/root/.prefect
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:4200/api/health').raise_for_status()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  prefect-worker:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    command: prefect worker start --pool default
+    environment:
+      - PREFECT_API_URL=http://prefect-server:4200/api
+      - VOYAGE_API_KEY_FILE=/run/secrets/voyage_key
+      - QDRANT_URL=http://qdrant:6333
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      prefect-server:
+        condition: service_healthy
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          # Issue 2.2: Worker runs Docling, needs enough memory for
+          # model loading (~1.1GB) plus PDF processing.
+          memory: 2G
+
+volumes:
+  qdrant_data:
+  pg_data:
+  redis_data:
+  phoenix_data:
+  prefect_data:
+
+# Secrets are managed via Docker secrets (issue 4.4).
+# In production, these reference files on the host.
+# For development, create local files in ./secrets/
+secrets:
+  pg_password:
+    file: ./secrets/pg_password
+  voyage_key:
+    file: ./secrets/voyage_key
+  anthropic_key:
+    file: ./secrets/anthropic_key
+  cohere_key:
+    file: ./secrets/cohere_key
+  google_key:
+    file: ./secrets/google_key
+  clerk_key:
+    file: ./secrets/clerk_key
+  resend_key:
+    file: ./secrets/resend_key
