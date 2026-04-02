@@ -36,8 +36,14 @@ logger = logging.getLogger(__name__)
 _VOYAGE_API_URL = "https://api.voyageai.com/v1/embeddings"
 
 # Models: full for indexing, lite for queries (shared embedding space).
-VOYAGE_INDEX_MODEL = "voyage-3"
-VOYAGE_QUERY_MODEL = "voyage-3-lite"
+# Voyage 4 series: all embeddings are compatible with each other.
+VOYAGE_INDEX_MODEL = "voyage-4"
+VOYAGE_QUERY_MODEL = "voyage-4-lite"
+
+# Ollama fallback model (ARCHITECTURE.md: Qwen3-Embedding-0.6B, ~639MB).
+# Used when Voyage API is down. Runs locally on CPU via Ollama.
+OLLAMA_EMBEDDING_MODEL = "qwen3-embedding:0.6b"
+_OLLAMA_DEFAULT_URL = "http://localhost:11434"
 
 # Batch size for Voyage API (max 128 texts per request).
 _VOYAGE_BATCH_SIZE = 64
@@ -66,16 +72,42 @@ class EmbeddingService:
         qdrant_client: AsyncQdrantClient,
         cache: EmbeddingCache | None = None,
         retry_config: RetryConfig | None = None,
+        ollama_url: str = _OLLAMA_DEFAULT_URL,
     ) -> None:
         self._api_key = voyage_api_key
         self._qdrant = qdrant_client
         self._cache = cache
         self._retry_config = retry_config or RetryConfig()
+        self._ollama_url = ollama_url
         self._http = httpx.AsyncClient(timeout=60.0)
 
     async def close(self) -> None:
         """Clean up HTTP client."""
         await self._http.aclose()
+
+    async def _call_ollama_embed(
+        self,
+        texts: list[str],
+    ) -> list[list[float]]:
+        """Call Ollama local embedding API (Qwen3-Embedding-0.6B fallback).
+
+        Used when Voyage API is completely down after all retries.
+        Lower quality (MTEB ~63 vs Voyage 66.8) but works offline.
+
+        Note: Ollama /api/embed supports batch input natively.
+        """
+        response = await self._http.post(
+            f"{self._ollama_url}/api/embed",
+            json={
+                "model": OLLAMA_EMBEDDING_MODEL,
+                "input": texts,
+            },
+            timeout=120.0,  # Local model can be slow on CPU.
+        )
+        response.raise_for_status()
+        data = response.json()
+        embeddings: list[list[float]] = data["embeddings"]
+        return embeddings
 
     async def _call_voyage_api(
         self,
@@ -100,10 +132,40 @@ class EmbeddingService:
         result = await call_with_retry(_do_call, self._retry_config)
         return result  # type: ignore[return-value]
 
+    async def _embed_with_fallback(
+        self,
+        texts: list[str],
+        model: str,
+    ) -> tuple[list[list[float]], str]:
+        """Embed texts with Voyage API, falling back to Ollama on failure.
+
+        Returns (vectors, model_used) tuple.
+        """
+        try:
+            vectors = await self._call_voyage_api(texts, model)
+            return vectors, model
+        except Exception as voyage_exc:
+            logger.warning(
+                "Voyage API failed for %d texts, falling back to Ollama Qwen3: %s",
+                len(texts),
+                str(voyage_exc)[:100],
+            )
+            try:
+                vectors = await self._call_ollama_embed(texts)
+                return vectors, OLLAMA_EMBEDDING_MODEL
+            except Exception as ollama_exc:
+                logger.error(
+                    "Both Voyage and Ollama failed. Voyage: %s, Ollama: %s",
+                    str(voyage_exc)[:100],
+                    str(ollama_exc)[:100],
+                )
+                raise
+
     async def embed_query(self, text: str) -> EmbeddingResult:
         """Embed a single query using voyage-4-lite (cheaper).
 
-        Checks Redis cache first. On miss, calls Voyage API and caches.
+        Checks Redis cache first. On miss, calls Voyage API with
+        Ollama Qwen3 fallback if Voyage is down.
         """
         model = VOYAGE_QUERY_MODEL
 
@@ -115,15 +177,15 @@ class EmbeddingService:
                     text=text, vector=cached_vector, model=model, cached=True
                 )
 
-        # Cache miss: call API.
-        vectors = await self._call_voyage_api([text], model)
+        # Cache miss: call API with fallback.
+        vectors, model_used = await self._embed_with_fallback([text], model)
         vector = vectors[0]
 
         # Cache the result.
         if self._cache:
-            await self._cache.set(text, vector, model)
+            await self._cache.set(text, vector, model_used)
 
-        return EmbeddingResult(text=text, vector=vector, model=model)
+        return EmbeddingResult(text=text, vector=vector, model=model_used)
 
     async def embed_chunks(
         self,
@@ -168,16 +230,16 @@ class EmbeddingService:
             ]
             batch_texts = [chunks[i].text for i in batch_indices]
 
-            vectors = await self._call_voyage_api(batch_texts, model)
+            vectors, model_used = await self._embed_with_fallback(batch_texts, model)
 
             for j, idx in enumerate(batch_indices):
                 vector = vectors[j]
                 results[idx] = EmbeddingResult(
-                    text=chunks[idx].text, vector=vector, model=model
+                    text=chunks[idx].text, vector=vector, model=model_used
                 )
                 # Cache the new embedding.
                 if self._cache:
-                    await self._cache.set(chunks[idx].text, vector, model)
+                    await self._cache.set(chunks[idx].text, vector, model_used)
 
         # All slots should be filled now.
         return [r for r in results if r is not None]
