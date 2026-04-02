@@ -87,6 +87,28 @@ services:
         limits:
           memory: 512M
 
+  # --- Local AI Fallback (Qwen3 models via Ollama) ---
+  # Provides offline fallback when Voyage/Cohere APIs are down.
+  # Models: qwen3-embedding:0.6b (~639MB) + qwen3-reranker:0.6b (~639MB)
+  # Pre-pull models on first run: docker compose exec ollama ollama pull qwen3-embedding:0.6b
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          # Both models loaded: ~1.5GB. Plus overhead.
+          memory: 2G
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:11434/api/tags || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
   # --- Application Layer ---
   api:
     build:
@@ -103,6 +125,7 @@ services:
       - REDIS_URL=redis://redis:6379
       - DATABASE_URL=postgresql://manualiq:${PG_PASS}@postgres:5432/manualiq
       - PHOENIX_COLLECTOR_ENDPOINT=http://phoenix:4317
+      - OLLAMA_URL=http://ollama:11434
       - CLERK_SECRET_KEY_FILE=/run/secrets/clerk_key
       - RESEND_API_KEY_FILE=/run/secrets/resend_key
     depends_on:
@@ -114,6 +137,8 @@ services:
         condition: service_healthy
       phoenix:
         condition: service_started
+      ollama:
+        condition: service_healthy
     restart: unless-stopped
     deploy:
       resources:
@@ -183,6 +208,7 @@ volumes:
   redis_data:
   phoenix_data:
   prefect_data:
+  ollama_data:
 
 # Secrets are managed via Docker secrets (issue 4.4).
 # In production, these reference files on the host.

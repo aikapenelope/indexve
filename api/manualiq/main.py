@@ -141,18 +141,23 @@ async def lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
         ),
     )
 
-    # Embedding service with Redis cache.
+    # Ollama URL for local Qwen3 fallbacks.
+    ollama_url = os.environ.get("OLLAMA_URL", "http://localhost:11434")
+
+    # Embedding service with Redis cache + Ollama fallback.
     emb_cache = EmbeddingCache(state.redis)
     state.embeddings = EmbeddingService(
         voyage_api_key=_read_secret("VOYAGE_API_KEY_FILE"),
         qdrant_client=state.qdrant,
         cache=emb_cache,
+        ollama_url=ollama_url,
     )
 
-    # Cohere Reranker.
+    # Cohere Reranker + Ollama Qwen3 fallback.
     cohere_key = _read_secret("COHERE_API_KEY_FILE")
-    state.reranker = (
-        Reranker(api_key=cohere_key) if cohere_key else Reranker(api_key="")
+    state.reranker = Reranker(
+        api_key=cohere_key or "",
+        ollama_url=ollama_url,
     )
 
     # LLM response cache (24h TTL).
