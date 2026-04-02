@@ -3,7 +3,7 @@
 # Addresses Category B issues from KNOWN_ISSUES.md:
 # - 2.2: Docling memory limit (2GB on worker)
 # - 2.3: Qdrant memory limit (3GB) + MAX_WORKERS=4 + int8 quantization
-# - 2.7: CopilotKit pinned version (in frontend package.json)
+# - 2.7: assistant-ui pinned version (in frontend package.json)
 # - 2.8: Prefect v3 only (pinned image tag)
 # - 4.4: All images use pinned tags (no :latest except Phoenix which
 #         doesn't publish stable semver tags yet)

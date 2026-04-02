@@ -190,20 +190,25 @@ por encima del objetivo de 5 segundos.
   validacion estructural, y NeMo solo para deteccion de prompt injection.
 - Medir latencia de guardrails en Phoenix y optimizar iterativamente.
 
-### 2.7 CopilotKit — Framework joven, API inestable
+### 2.7 assistant-ui — Framework joven, API en evolucion
 
-**Fuente**: GitHub issues, experiencia de la comunidad.
+**Fuente**: GitHub issues, evaluacion de chat UI libraries 2026 (dev.to).
 
-**Problema**: CopilotKit tiene 15K+ stars pero es un framework de 2024. La API puede
-cambiar entre versiones. La documentacion tiene gaps. Algunos features avanzados
-(generative UI, multi-agent) estan en beta.
+**Problema**: assistant-ui (~7.9K stars, YC-backed) sigue el patron headless de Radix/shadcn.
+La API es mas estable que CopilotKit (solo UI, no framework agentico), pero al ser headless
+requiere mas trabajo de diseno para lograr una UI pulida. La documentacion tiene gaps en
+integraciones avanzadas.
 
 **Mitigacion**:
-- Pinear version exacta de CopilotKit en package.json.
-- Usar solo features estables: chat UI, streaming, context providers.
-- Evitar features beta en produccion.
-- Tener plan B: Vercel AI SDK + chat UI custom (mas trabajo pero mas estable).
-- Encapsular la integracion con CopilotKit en un wrapper propio para facilitar migracion.
+- Pinear version exacta de assistant-ui en package.json.
+- Usar solo primitivos estables: Thread, Composer, Message.
+- Vercel AI SDK (`useChat`) como capa de streaming — bien documentado y maduro.
+- Si assistant-ui no cumple, migrar a Vercel AI SDK + componentes custom es directo
+  porque assistant-ui se construye encima de Vercel AI SDK.
+
+**Por que se descarto CopilotKit**: Architecture lock-in. CopilotKit adopta su propio modelo
+de ejecucion de agentes, state sync, y action system. ManualIQ solo necesita chat UI con
+streaming y citas — CopilotKit es overkill y acopla el frontend al backend innecesariamente.
 
 ### 2.8 Prefect — Migracion v2 a v3
 
@@ -435,7 +440,7 @@ El disclaimer de verificacion con supervisor no es decorativo, es un requisito l
 | 2.2 | Docling crash memoria        | Dockerfile: pre-descargar modelos + memory limit 2GB en worker                 | Baja        |
 | 2.3 | Qdrant crash memoria         | Docker: memory limit 3GB + QDRANT__SERVICE__MAX_WORKERS=4 + int8 quantization  | Baja        |
 | 2.4 | Qdrant filtros lentos        | Crear payload indexes al inicializar coleccion (tenant_id, equipment, safety_level) | Baja   |
-| 2.7 | CopilotKit inestable         | Pinear version en package.json + wrapper de abstraccion                        | Baja        |
+| 2.7 | assistant-ui en evolucion    | Pinear version en package.json + Vercel AI SDK como fallback                   | Baja        |
 | 2.8 | Prefect v2 vs v3             | Usar solo v3 desde el inicio, ignorar tutoriales v2                            | Baja        |
 | 4.4 | Supply chain attacks         | requirements.txt con hashes + pip-audit + Docker tags fijos                    | Baja        |
 | 5.3 | Single point of failure      | Docker restart policies unless-stopped en todos los servicios                  | Baja        |

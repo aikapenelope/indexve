@@ -87,7 +87,7 @@ Auth                 Clerk                          8/10    $0-25
 Orquestacion         Prefect OSS v3                 8/10    $0
 Observabilidad       Arize Phoenix OSS              8/10    $0
 Evaluacion RAG       Phoenix Evals (integrado)      8/10    $0
-Frontend             CopilotKit + Next.js           7/10    $0
+Frontend             assistant-ui + Next.js         8/10    $0
 Email                Resend                         8/10    $0-20
 Guardrails           NeMo Guardrails (NVIDIA OSS)   8/10    $0
 SCORE PROMEDIO                                      8.1/10
@@ -268,11 +268,22 @@ Automaticamente captura cada query, retrieval, reranking, y LLM call con tiempos
 
 **Validacion de comunidad**: Hamel Husain (Parlance Labs): "The most impressive open source eval tool." OpenTelemetry nativo, vendor-agnostic. En r/LLMDevs citado como "flexible, open baseline that scales."
 
-### 3.14 Frontend: CopilotKit + Next.js
+### 3.14 Frontend: assistant-ui + Next.js
 
-- MIT license, AG-UI protocol, streaming nativo con LlamaIndex.
-- 15K+ GitHub stars. Framework joven (2024) pero activamente mantenido.
-- Alternativa de respaldo: Vercel AI SDK con chat UI custom.
+- MIT license, headless composable (patron Radix/shadcn). ~7.9K GitHub stars, YC-backed.
+- Streaming first-class via Vercel AI SDK (`useChat` hook).
+- Primitivos: `Thread`, `Composer`, `Message` — se componen sin lock-in de arquitectura.
+- PWA-ready: Next.js 16 soporta service workers nativamente para instalacion en celular.
+- Integracion con LlamaIndex Workflows via FastAPI `StreamingResponse`.
+
+**Por que no CopilotKit**: CopilotKit (~29K stars) es un framework agentico completo, no solo UI.
+Para ManualIQ que solo necesita chat + streaming + citas, es overkill. Introduce architecture
+lock-in (el mas pesado de los 4 tipos de lock-in) al adoptar su modelo de ejecucion de agentes,
+state sync, y action system. assistant-ui es solo UI — el backend evoluciona independientemente.
+
+**Por que no Vercel AI SDK solo**: Vercel AI SDK son hooks (`useChat`), no componentes.
+assistant-ui se construye encima de Vercel AI SDK y agrega los componentes que necesitamos
+(chat UI, streaming, markdown, code blocks, file attachments) sin tener que construirlos.
 
 ### 3.15 Email: Resend
 
@@ -318,7 +329,7 @@ No se conecta con el App Plane (10.0.1.30) ni el Data Plane (10.0.1.20). ManualI
 | **Arize Phoenix** | 0.3-0.5 GB | Observabilidad + evaluaciones |
 | **Prefect server** | 0.3-0.5 GB | Single instance con SQLite |
 | **Prefect worker** | 0.1-0.2 GB | Ejecuta flows de ingestion |
-| **Next.js frontend** | 0.3-0.5 GB | CopilotKit UI |
+| **Next.js frontend** | 0.3-0.5 GB | assistant-ui chat |
 | **Docling** (on-demand) | 0.5-1 GB | Solo durante ingestion de PDFs |
 | **Sistema operativo** | 0.5-1 GB | Ubuntu 24.04 + Docker overhead |
 | **TOTAL** | **~5-8.5 GB** | **Cabe holgadamente en 16GB** |
@@ -571,7 +582,7 @@ Cuando 3 RAGs no quepan en CX43, escalar a CX53 (16 vCPU, 32GB, ~$23/mes).
 | Multi-tenancy | 8/10 | Qdrant shard keys + Clerk orgs |
 | Seguridad | 8/10 | NeMo Guardrails + rate limiting + tenant isolation |
 | Operaciones | 8/10 | Prefect + health checks + backups |
-| Frontend | 7/10 | CopilotKit funcional pero joven |
+| Frontend | 8/10 | assistant-ui: ligero, composable, sin architecture lock-in |
 | Costo-eficiencia | 9/10 | ~$53-164/mes para enterprise RAG |
 | Escalabilidad | 7/10 | Single VPS, escala vertical |
 | **TOTAL** | **8.0/10** | **Production-ready** |
@@ -592,5 +603,7 @@ Cuando 3 RAGs no quepan en CX43, escalar a CX53 (16 vCPU, 32GB, ~$23/mes).
 | RAGAS separado? | **No, Phoenix Evals** | Phoenix integra evaluaciones |
 | Cognee? | **No (futuro add-on)** | 7K stars, emergente, RAG clasico basta |
 | Guardrails? | **Si, NeMo Guardrails** | Critico para produccion enterprise |
+| Frontend? | **assistant-ui + Next.js** | Headless, sin architecture lock-in, PWA-ready |
+| CopilotKit? | **No** | Architecture lock-in, overkill para chat + citas |
 | Cabe en CX43? | **Si** | ~5-8.5GB de 16GB, margen amplio |
 | Conecta con infra existente? | **No** | VPS independiente |
