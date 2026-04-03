@@ -227,6 +227,14 @@ async def get_auth(request: Request) -> AuthContext:
     return await authenticate_request(request)
 
 
+async def get_auth_optional(request: Request) -> AuthContext | None:
+    """Optional auth — returns None instead of raising 401."""
+    try:
+        return await authenticate_request(request)
+    except HTTPException:
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Async LLM helper for intelligence module
 # ---------------------------------------------------------------------------
@@ -928,21 +936,35 @@ async def history_endpoint(
 @app.get("/documents/{doc_id}/pdf")
 async def serve_document_pdf(
     doc_id: str,
-    auth: AuthContext = Depends(get_auth),
+    token: str = Query(default=""),
+    auth: AuthContext | None = Depends(get_auth_optional),
 ) -> FileResponse:
     """Serve the original PDF file for a document.
 
-    Used by all channels to attach the source PDF:
-    - Web: link in SourceViewer
-    - Email: Resend attachment
-    - WhatsApp: Twilio document message
+    Supports two auth modes:
+    1. Clerk JWT (web frontend) — uses auth.tenant_id
+    2. Signed token (WhatsApp/email) — token contains tenant_id + expiry + HMAC
 
     Files are served from /corpus/{tenant_id}/ with tenant isolation.
     """
-    corpus_dir = os.environ.get("CORPUS_DIR", "/corpus")
-    tenant_dir = Path(corpus_dir) / auth.tenant_id
+    from manualiq.middleware.signed_urls import verify_pdf_token
 
-    # Search for the PDF by doc_id (filename stem).
+    # Determine tenant_id from token or auth.
+    if token:
+        verified = verify_pdf_token(token)
+        if verified is None:
+            raise HTTPException(status_code=403, detail="Invalid or expired PDF token")
+        tenant_id, verified_doc_id = verified
+        if verified_doc_id != doc_id:
+            raise HTTPException(status_code=403, detail="Token does not match document")
+    elif auth is not None:
+        tenant_id = auth.tenant_id
+    else:
+        raise HTTPException(status_code=401, detail="Authentication required")
+
+    corpus_dir = os.environ.get("CORPUS_DIR", "/corpus")
+    tenant_dir = Path(corpus_dir) / tenant_id
+
     for ext in (".pdf", ".PDF"):
         pdf_path = tenant_dir / f"{doc_id}{ext}"
         if pdf_path.is_file():
@@ -1159,9 +1181,22 @@ async def whatsapp_inbound_endpoint(request: Request) -> JSONResponse:
         return JSONResponse({"status": "unauthorized", "phone": msg["sender"]})
 
     tenant_id = user_info["tenant_id"]
+    user_id = user_info["user_id"]
     logger.info(
         "WhatsApp from %s (tenant=%s): %s", msg["sender"], tenant_id, msg["body"][:50]
     )
+
+    # Rate limit (same as /query — prevents abuse via WhatsApp).
+    rate_result = await state.rate_limiter.check_rate_limit(tenant_id, user_id)
+    if not rate_result.allowed:
+        await send_whatsapp_text(
+            to=msg["sender"],
+            body="Ha excedido el limite de consultas. Intente de nuevo mas tarde.",
+            twilio_sid=_read_secret("TWILIO_ACCOUNT_SID_FILE"),
+            twilio_token=_read_secret("TWILIO_AUTH_TOKEN_FILE"),
+            twilio_from=os.environ.get("TWILIO_WHATSAPP_FROM", ""),
+        )
+        return JSONResponse({"status": "rate_limited"})
 
     try:
         # RAG pipeline (same as /query).
@@ -1257,6 +1292,9 @@ async def whatsapp_inbound_endpoint(request: Request) -> JSONResponse:
         )
 
         # Send top 2 source PDFs as document attachments (FREE within 24h window).
+        # Uses signed tokens instead of exposing tenant_id in URL.
+        from manualiq.middleware.signed_urls import generate_pdf_token
+
         api_base = os.environ.get("API_PUBLIC_URL", "http://localhost:8000")
         seen_docs: set[str] = set()
         for src in sources[:2]:
@@ -1264,7 +1302,8 @@ async def whatsapp_inbound_endpoint(request: Request) -> JSONResponse:
             if doc_id in seen_docs:
                 continue
             seen_docs.add(doc_id)
-            pdf_url = f"{api_base}/documents/{doc_id}/pdf?x-tenant-id={tenant_id}&x-user-id={user_info['user_id']}"
+            token = generate_pdf_token(tenant_id, doc_id)
+            pdf_url = f"{api_base}/documents/{doc_id}/pdf?token={token}"
             await send_whatsapp_document(
                 to=msg["sender"],
                 document_url=pdf_url,
@@ -1298,6 +1337,7 @@ async def email_inbound_endpoint(request: Request) -> JSONResponse:
         format_email_response,
         parse_inbound_email,
         send_email_response,
+        verify_email_sender,
     )
 
     payload = await request.json()
@@ -1305,6 +1345,14 @@ async def email_inbound_endpoint(request: Request) -> JSONResponse:
 
     if email is None:
         return JSONResponse({"status": "ignored", "reason": "invalid email"})
+
+    # Verify sender is authorized for this tenant.
+    authorized = await verify_email_sender(state.redis, email.sender, email.tenant_id)
+    if not authorized:
+        logger.warning(
+            "Unauthorized email sender %s for tenant %s", email.sender, email.tenant_id
+        )
+        return JSONResponse({"status": "unauthorized", "sender": email.sender})
 
     logger.info(
         "Inbound email from %s for tenant %s: %s",
